@@ -20,16 +20,21 @@
 
 #define RVA_RULE_REQUEST_SERVER 0x4ebf9d0  // R5NetBlServerReactorV2::RuleRequestServer
 #define RVA_ADD_SERVER_REACTOR 0x4e1daf0   // R5NetBlSession::AddServerReactor
+#define RVA_GET_ACCOUNT_ID 0x4e43c70       // reactor -> "account-id" from the client's gRPC metadata
 // First 32 bytes of each target in game build 0.10.0.9.32. Any game update moves
 // code, so a mismatch means: do not hook (a wrong address would crash the server).
 #define SIG_RULE_REQUEST_SERVER "\x48\x89\x5c\x24\x18\x48\x89\x74\x24\x20\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x81\xec\x50\x0d\x00\x00\x48\x8b\x05\x4f\xa8\x93"
 #define SIG_ADD_SERVER_REACTOR "\x48\x89\x5c\x24\x18\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8d\xac\x24\x50\xfa\xff\xff\x48\x81\xec\xb0\x06\x00\x00\x48"
+#define SIG_GET_ACCOUNT_ID "\x40\x53\x48\x81\xec\x80\x00\x00\x00\x48\x8b\x05\xc0\x65\x9b\x0a\x48\x33\xc4\x48\x89\x44\x24\x70\x48\x8b\xda\x48\x89\x54\x24\x28"
 #define DATA_DIR "Z:\\home\\steam\\server-files\\windrose_plus_data\\"
 #define ID_LEN 32
 #define MAX_PLAYERS 64
 
 typedef void *(*RuleRequestServer_t)(void *reactor, void *request, void *a3, void *a4);
 typedef void *(*AddServerReactor_t)(void *session, void *reactor_sp, void *a3, void *a4);
+typedef void *(*GetAccountId_t)(void *reactor, void *out_string);
+static GetAccountId_t get_account_id;
+static FILE *evf;  // marker events for the Lua side (live markers), one line each
 static RuleRequestServer_t orig_rrs;
 static AddServerReactor_t orig_asr;
 static void *volatile session;
@@ -99,7 +104,7 @@ static void learn_player(const char *id) {
 
 // Reactor <-> PlayerId, learned from marker rules (the payload names the sender).
 // A reactor is only used while it is still in the session's reactor list.
-static struct { void *reactor; char pid[ID_LEN]; } links[MAX_PLAYERS];
+static struct { void *reactor; char pid[ID_LEN]; char acct[ID_LEN + 1]; } links[MAX_PLAYERS];
 
 static void link_reactor(void *r, const char *pid) {
     int free_slot = -1;
@@ -108,8 +113,54 @@ static void link_reactor(void *r, const char *pid) {
         if (!links[i].reactor && free_slot < 0) free_slot = i;
     }
     if (free_slot < 0) free_slot = 0;  // ponytail: full table overwrites slot 0, 64 players is far beyond max
+    if (links[free_slot].reactor != r) links[free_slot].acct[0] = 0;
     links[free_slot].reactor = r;
     memcpy(links[free_slot].pid, pid, ID_LEN);
+}
+
+// AccountId of a reactor, cached per link. Calls the game's own getter.
+static const char *account_of(void *r) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (links[i].reactor != r) continue;
+        if (!links[i].acct[0]) {
+            // ponytail: the game allocates the id string, we never free it (once per connection)
+            static char out[MAX_PLAYERS][0x80] __attribute__((aligned(16)));  // object size unknown, room to spare
+            memset(out[i], 0, 0x80);
+            get_account_id(r, out[i]);
+            // Result is an R5 id object: vtable at +0, char data at +0x8, length at +0x18.
+            char *d = *(char **)(out[i] + 0x8);
+            size_t len = *(size_t *)(out[i] + 0x18);
+            if (len == ID_LEN && readable(d, ID_LEN) && is_id(d)) { memcpy(links[i].acct, d, ID_LEN); links[i].acct[ID_LEN] = 0; }
+            else {
+                fprintf(logf, "  account lookup failed, out:");
+                for (int k = 0; k < 0x20; k++) fprintf(logf, "%02x", (uint8_t)out[i][k]);
+                fprintf(logf, " len=%zu\n", d ? len : (size_t)-1);
+            }
+        }
+        return links[i].acct[0] ? links[i].acct : NULL;
+    }
+    return NULL;
+}
+
+// Payload after the three ids: X, Y, Z (double), Type (int32), [u32 len][name], [u32 len][namespace].
+static void write_event(char op, const char *acct, const char *p, size_t plen) {
+    const char *mid = p + 2 * (4 + ID_LEN) + 4;
+    size_t rest = plen - 3 * (4 + ID_LEN);  // bytes after the three ids
+    if (op == 'R' || rest < 32) {
+        fprintf(evf, "R\t%s\t%.32s\n", acct, mid);
+    } else {
+        const char *q = p + 3 * (4 + ID_LEN);
+        double x, y, z; int32_t type; uint32_t nl, nsl = 0;
+        memcpy(&x, q, 8); memcpy(&y, q + 8, 8); memcpy(&z, q + 16, 8); memcpy(&type, q + 24, 4);
+        memcpy(&nl, q + 28, 4);
+        if (nl > 200 || 32 + (size_t)nl > rest) nl = 0;
+        if (32 + (size_t)nl + 4 <= rest) memcpy(&nsl, q + 32 + nl, 4);
+        char name[256];
+        memcpy(name, q + 32, nl); name[nl] = 0;
+        for (char *c = name; *c; c++) if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
+        fprintf(evf, "%c\t%s\t%.32s\t%.1f\t%.1f\t%.1f\t%d\t%d\t%s\n", op, acct, mid, x, y, z, type, nsl > 0, name);
+    }
+    fflush(evf);
 }
 
 static int in_session(void *r) {
@@ -163,6 +214,7 @@ static void *hook_rrs(void *reactor, void *request, void *a3, void *a4) {
 
     // Snapshot before the game runs the rule; it may consume the strings.
     char buf[4096];
+    char op = marker ? name[18] : 0;  // after "R5BLPlayerInWorld_": Add / Update / Remove
     if (marker && plen <= sizeof buf) memcpy(buf, payload, plen);
     else marker = 0;
 
@@ -173,6 +225,8 @@ static void *hook_rrs(void *reactor, void *request, void *a3, void *a4) {
     fprintf(logf, "%.*s from %.32s marker %.32s\n", (int)nlen, name, buf + 4, buf + 4 + 2 * (4 + ID_LEN));
     learn_player(buf + 4);
     link_reactor(reactor, buf + 4);
+    const char *acct = account_of(reactor);
+    if (acct && evf) write_event(op, acct, buf, plen);
 
     // Re-fetch: only replay if the strings are still intact after the original call.
     size_t plen2 = 0, rlen2 = 0;
@@ -210,11 +264,14 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     load_players();
     char *base = (char *)GetModuleHandleA(NULL);
     if (memcmp(base + RVA_RULE_REQUEST_SERVER, SIG_RULE_REQUEST_SERVER, 32) ||
-        memcmp(base + RVA_ADD_SERVER_REACTOR, SIG_ADD_SERVER_REACTOR, 32)) {
+        memcmp(base + RVA_ADD_SERVER_REACTOR, SIG_ADD_SERVER_REACTOR, 32) ||
+        memcmp(base + RVA_GET_ACCOUNT_ID, SIG_GET_ACCOUNT_ID, 32)) {
         fprintf(logf, "markersync DISABLED: game build changed, hook signatures do not match\n");
         fflush(logf);
         return TRUE;
     }
+    get_account_id = (GetAccountId_t)(base + RVA_GET_ACCOUNT_ID);
+    evf = fopen(DATA_DIR "markersync_events.txt", "w");
     MH_STATUS s0 = MH_Initialize();
     MH_STATUS s1 = MH_CreateHook(base + RVA_RULE_REQUEST_SERVER, (void *)hook_rrs, (void **)&orig_rrs);
     MH_STATUS s2 = MH_CreateHook(base + RVA_ADD_SERVER_REACTOR, (void *)hook_asr, (void **)&orig_asr);

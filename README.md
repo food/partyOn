@@ -3,8 +3,8 @@
 Server-side mod for the Windrose dedicated server: map markers a player adds,
 renames or removes are applied to every player in the world.
 
-Status 0.1.0: markers reach the other players' saves and show up after their
-next login. They do not appear live yet.
+Status 0.2.0: markers show up live for every online player and are kept in
+every player's save, so they are still there after a relog.
 
 ## How it works
 
@@ -18,17 +18,45 @@ mod via `package.loadlib`. It hooks two functions of the server binary:
 - `R5NetBlSession::AddServerReactor`: captures the session, whose reactor list
   tells which connections are still alive.
 
+The DLL also calls the game's own getter for a connection's AccountId
+(`reactor+0x20` gRPC metadata `account-id`).
+
+**Persistence (DLL):** the rule replay writes the marker into each player's
+`PlayerInWorld` record. A client ignores the resulting diff on screen, though,
+so this alone only shows after the next login.
+
+**Live (Lua, `mod/live.lua`):** for each marker action the DLL appends a line to
+`windrose_plus_data/markersync_events.txt` (action, sender AccountId, MarkerId,
+position, icon, name). The Lua side reads it every 300 ms. For every other
+online player it creates, moves, renames or destroys a marker model with
+`R5MarkersSystemComponent:CreateMarker` / `DestroyMarker` on that player's
+PlayerState. These server-side models replicate to their owner only and appear
+at once. After a relog the PlayerState is new, so the model is gone and the
+marker comes from the save, without duplicates.
+
 Online players get the replay through their own connection, offline players
 through the sender's (save only). The connection-to-player mapping is learned
 from marker requests. Known PlayerIds persist in
 `windrose_plus_data/markersync_players.txt`, the log goes to
 `windrose_plus_data/markersync.log`.
 
-Hook addresses are fixed RVAs for game build `0.10.0.9.32`. Before hooking, the
+Hook and call addresses are fixed RVAs for game build `0.10.0.9.32`. Before hooking, the
 DLL compares 32 bytes of each target. After a game update it logs
 `markersync DISABLED` and does nothing, instead of crashing the server. The
 addresses then have to be found again (`tools/xref.py` on the log strings
-`Server mode. RuleRequest` and `R5NetBlSession::AddServerReactor`).
+`Server mode. RuleRequest` and `R5NetBlSession::AddServerReactor`; the AccountId
+getter is the call right before the `AccountId {}` log in `AddServerReactor`).
+
+## Known limits
+
+- Marker icon: the rule's `Type` is passed to `SetIcon`. The mapping is unverified.
+- A marker that a player already had from the save (placed before they logged in)
+  only disappears for them after a relog when someone else removes it. The live
+  path only knows the models it created.
+- Removing or editing another player's live marker (a server-side model) has not
+  been tested.
+- `wp.msync [poll]` (RCON) shows the live state: event offset, players found,
+  models per player.
 
 ## Layout on the host
 
@@ -51,6 +79,9 @@ cp markersync.dll ../server-files/windrose_plus_mods/markersync/
 Copy `mod/` to `server-files/windrose_plus_mods/markersync/` and list the mod in
 `windrose_plus_mods/mods_registry.json` (`["markersync"]`). Windrose+ only loads
 registered mods. A server restart is needed to load a new DLL.
+
+`tools/probe.lua` has the reverse-engineering RCON commands (`wp.uprobe`,
+`wp.rpcs`, `wp.mktest`, ...); it is not part of the deployed mod.
 
 `tools/guardtest.sh` builds a variant with a wrong signature and checks that the
 mod disables itself, then restores the real build.
