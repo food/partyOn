@@ -1,0 +1,9 @@
+services:
+  windev:
+    build: .
+    image: windrose-dev
+    volumes:
+      - .:/work
+      - ../server-files/R5/Binaries/Win64:/bin64:ro
+    deploy:
+      replicas: 0
