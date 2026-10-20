@@ -21,11 +21,15 @@
 #define RVA_RULE_REQUEST_SERVER 0x4ebf9d0  // R5NetBlServerReactorV2::RuleRequestServer
 #define RVA_ADD_SERVER_REACTOR 0x4e1daf0   // R5NetBlSession::AddServerReactor
 #define RVA_GET_ACCOUNT_ID 0x4e43c70       // reactor -> "account-id" from the client's gRPC metadata
+#define RVA_ADD_MARKER_DO 0x688b790       // R5BLPlayerInWorld_AddUserMarkerRule::Do_Impl
+#define RVA_UPDATE_MARKER_DO 0x688c340    // R5BLPlayerInWorld_UpdateUserMarkerRule::Do_Impl
 // First 32 bytes of each target in game build 0.10.0.9.32. Any game update moves
 // code, so a mismatch means: do not hook (a wrong address would crash the server).
 #define SIG_RULE_REQUEST_SERVER "\x48\x89\x5c\x24\x18\x48\x89\x74\x24\x20\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x81\xec\x50\x0d\x00\x00\x48\x8b\x05\x4f\xa8\x93"
 #define SIG_ADD_SERVER_REACTOR "\x48\x89\x5c\x24\x18\x55\x56\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x8d\xac\x24\x50\xfa\xff\xff\x48\x81\xec\xb0\x06\x00\x00\x48"
 #define SIG_GET_ACCOUNT_ID "\x40\x53\x48\x81\xec\x80\x00\x00\x00\x48\x8b\x05\xc0\x65\x9b\x0a\x48\x33\xc4\x48\x89\x44\x24\x70\x48\x8b\xda\x48\x89\x54\x24\x28"
+#define SIG_ADD_MARKER_DO "\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x57\x48\x81\xec\xb0\x00\x00\x00\x48\x8b\x05\x97\xea\xf6\x08\x48\x33\xc4\x48\x89\x84\x24"
+#define SIG_UPDATE_MARKER_DO "\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x57\x48\x81\xec\xb0\x00\x00\x00\x48\x8b\x05\xe7\xde\xf6\x08\x48\x33\xc4\x48\x89\x84\x24"
 #define DATA_DIR "Z:\\home\\steam\\server-files\\windrose_plus_data\\"
 #define ID_LEN 32
 #define MAX_PLAYERS 64
@@ -35,6 +39,8 @@ typedef void *(*AddServerReactor_t)(void *session, void *reactor_sp, void *a3, v
 typedef void *(*GetAccountId_t)(void *reactor, void *out_string);
 static GetAccountId_t get_account_id;
 static FILE *evf;  // marker events for the Lua side (live markers), one line each
+typedef char (*RuleDo_t)(void *rule);
+static RuleDo_t orig_add_do, orig_update_do;
 static RuleRequestServer_t orig_rrs;
 static AddServerReactor_t orig_asr;
 static void *volatile session;
@@ -247,6 +253,49 @@ static void *hook_rrs(void *reactor, void *request, void *a3, void *a4) {
     return ret;
 }
 
+// Server-side CreateMarker runs the Add/Update user marker rule locally, which writes the
+// marker into the recipient's PlayerInWorld record. Live copies made by live.lua must not be
+// saved (they would come back as nameless ghosts after a relog), so both rules are skipped
+// when the marker class is the Simple model, which real user markers never use.
+// The rule object embeds its input model: ids at +0x160 and +0x190, the R5BLUserMarker at +0x1c0.
+static int has_text(const char *d, size_t n, const char *needle) {
+    size_t k = strlen(needle);
+    for (size_t i = 0; i + k <= n; i++)
+        if (!memcmp(d + i, needle, k)) return 1;
+    return 0;
+}
+
+static int is_copy_marker(void *rule) {
+    char *base = (char *)rule + 0x1c0;
+    for (int off = 0; off <= 0x200; off += 8) {  // find the MarkerClass std::string
+        char *s = base + off;
+        if (!readable(s, 0x20)) return 0;
+        size_t size = *(size_t *)(s + 0x10), cap = *(size_t *)(s + 0x18);
+        if (size < 20 || size > 300 || cap < size || cap > (1 << 20)) continue;
+        char *d = *(char **)s;
+        if (readable(d, size) && has_text(d, size, "BP_MarkerModel_Simple")) return 1;
+    }
+    return 0;
+}
+
+static char hook_add_do(void *rule) {
+    if (!is_copy_marker(rule)) return orig_add_do(rule);
+    EnterCriticalSection(&lock);
+    fprintf(logf, "skipped saving a live copy (add)\n");
+    fflush(logf);
+    LeaveCriticalSection(&lock);
+    return 1;
+}
+
+static char hook_update_do(void *rule) {
+    if (!is_copy_marker(rule)) return orig_update_do(rule);
+    EnterCriticalSection(&lock);
+    fprintf(logf, "skipped saving a live copy (update)\n");
+    fflush(logf);
+    LeaveCriticalSection(&lock);
+    return 1;
+}
+
 static void *hook_asr(void *s, void *reactor_sp, void *a3, void *a4) {
     session = s;
     EnterCriticalSection(&lock);
@@ -308,7 +357,9 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     char *base = (char *)GetModuleHandleA(NULL);
     if (memcmp(base + RVA_RULE_REQUEST_SERVER, SIG_RULE_REQUEST_SERVER, 32) ||
         memcmp(base + RVA_ADD_SERVER_REACTOR, SIG_ADD_SERVER_REACTOR, 32) ||
-        memcmp(base + RVA_GET_ACCOUNT_ID, SIG_GET_ACCOUNT_ID, 32)) {
+        memcmp(base + RVA_GET_ACCOUNT_ID, SIG_GET_ACCOUNT_ID, 32) ||
+        memcmp(base + RVA_ADD_MARKER_DO, SIG_ADD_MARKER_DO, 32) ||
+        memcmp(base + RVA_UPDATE_MARKER_DO, SIG_UPDATE_MARKER_DO, 32)) {
         fprintf(logf, "markersync DISABLED: game build changed, hook signatures do not match\n");
         fflush(logf);
         return TRUE;
@@ -321,6 +372,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     MH_STATUS s0 = MH_Initialize();
     MH_STATUS s1 = MH_CreateHook(base + RVA_RULE_REQUEST_SERVER, (void *)hook_rrs, (void **)&orig_rrs);
     MH_STATUS s2 = MH_CreateHook(base + RVA_ADD_SERVER_REACTOR, (void *)hook_asr, (void **)&orig_asr);
+    MH_STATUS s4 = MH_CreateHook(base + RVA_ADD_MARKER_DO, (void *)hook_add_do, (void **)&orig_add_do);
+    MH_STATUS s5 = MH_CreateHook(base + RVA_UPDATE_MARKER_DO, (void *)hook_update_do, (void **)&orig_update_do);
     MH_STATUS s3 = MH_EnableHook(MH_ALL_HOOKS);
     fprintf(logf, "markersync loaded init=%d rrs=%d asr=%d enable=%d players=%d\n", s0, s1, s2, s3, nplayers);
     fflush(logf);
