@@ -256,6 +256,49 @@ static void *hook_asr(void *s, void *reactor_sp, void *a3, void *a4) {
     return orig_asr(s, reactor_sp, a3, a4);
 }
 
+// Crash diagnostics: the game's own crash handler logs no stack under Wine, so log fatal
+// exceptions here (address, module, return addresses found on the stack) and let them pass on.
+static char *exe_base, *dll_base;
+static size_t exe_size, dll_size;
+static volatile LONG crash_logs;
+
+static size_t image_size(char *base) {
+    IMAGE_NT_HEADERS *nt = (IMAGE_NT_HEADERS *)(base + ((IMAGE_DOS_HEADER *)base)->e_lfanew);
+    return nt->OptionalHeader.SizeOfImage;
+}
+
+static void log_addr(const char *tag, uintptr_t a) {
+    if (a >= (uintptr_t)exe_base && a < (uintptr_t)exe_base + exe_size)
+        fprintf(logf, " %s exe+%llx", tag, (unsigned long long)(a - (uintptr_t)exe_base));
+    else if (a >= (uintptr_t)dll_base && a < (uintptr_t)dll_base + dll_size)
+        fprintf(logf, " %s markersync+%llx", tag, (unsigned long long)(a - (uintptr_t)dll_base));
+}
+
+static LONG WINAPI on_exception(EXCEPTION_POINTERS *e) {
+    DWORD code = e->ExceptionRecord->ExceptionCode;
+    if (code != EXCEPTION_ACCESS_VIOLATION && code != EXCEPTION_ILLEGAL_INSTRUCTION &&
+        code != EXCEPTION_STACK_OVERFLOW && code != EXCEPTION_INT_DIVIDE_BY_ZERO && code != EXCEPTION_PRIV_INSTRUCTION)
+        return EXCEPTION_CONTINUE_SEARCH;
+    if (InterlockedIncrement(&crash_logs) > 10) return EXCEPTION_CONTINUE_SEARCH;
+    CONTEXT *c = e->ContextRecord;
+    fprintf(logf, "EXCEPTION %08lx tid=%lu rip=%p", code, GetCurrentThreadId(), (void *)c->Rip);
+    log_addr("at", c->Rip);
+    if (code == EXCEPTION_ACCESS_VIOLATION)
+        fprintf(logf, " %s %p", e->ExceptionRecord->ExceptionInformation[0] ? "write" : "read",
+                (void *)e->ExceptionRecord->ExceptionInformation[1]);
+    fprintf(logf, "\n  stack:");
+    uintptr_t *sp = (uintptr_t *)c->Rsp;
+    for (int i = 0, n = 0; i < 512 && n < 24; i++) {
+        if (!readable(sp + i, 8)) break;
+        uintptr_t v = sp[i];
+        if ((v >= (uintptr_t)exe_base && v < (uintptr_t)exe_base + exe_size) ||
+            (v >= (uintptr_t)dll_base && v < (uintptr_t)dll_base + dll_size)) { log_addr("", v); n++; }
+    }
+    fprintf(logf, "\n");
+    fflush(logf);
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
 BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     if (reason != DLL_PROCESS_ATTACH) return TRUE;
     InitializeCriticalSection(&lock);
@@ -270,6 +313,9 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         fflush(logf);
         return TRUE;
     }
+    exe_base = base; exe_size = image_size(base);
+    dll_base = (char *)h; dll_size = image_size((char *)h);
+    AddVectoredExceptionHandler(1, on_exception);
     get_account_id = (GetAccountId_t)(base + RVA_GET_ACCOUNT_ID);
     evf = fopen(DATA_DIR "markersync_events.txt", "w");
     MH_STATUS s0 = MH_Initialize();
