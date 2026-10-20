@@ -20,7 +20,9 @@ do  -- skip events from before a Lua reload, they were already applied
     if f then offset = f:seek("end"); f:close() end
 end
 
-local models = {}  -- models[account][markerId] = marker model
+local models = {}    -- models[account][markerId] = marker model
+local sessions = {}  -- sessions[account] = { comp = address, since = time the player state appeared }
+local born = {}      -- born[markerId] = time we first saw the marker added
 
 local function class_of(asset)
     local path = asset .. "." .. asset:match("[^/]+$") .. "_C"
@@ -54,31 +56,64 @@ local function selftest()
     return false
 end
 
+-- Remembers when a player's state appeared; a new state means the player (re)joined.
+local function session_since(acct, comp)
+    local addr = comp:GetAddress()
+    local s = sessions[acct]
+    if not s or s.comp ~= addr then
+        s = { comp = addr, since = os.time() }
+        sessions[acct] = s
+        models[acct] = {}
+    end
+    return s.since
+end
+
+-- Builds a copy. CreateMarker with an empty OwnerId makes the game save the model as a user
+-- marker of the recipient (a nameless ghost after relog); an owner marks it as a system marker.
+local function create_copy(comp, simple, user, ev, pos)
+    local m = comp:CreateMarker(simple, pos, { ID = ev.sender })
+    pcall(function() m.MarkerGuid = guid(ev.id) end)
+    -- Same visibility as a real user marker, so the copy also shows in the world view.
+    local cdo = user:GetCDO()
+    for _, f in ipairs({ "WorldVisibilityData", "MapVisibilityData", "MiniMapVisibilityData",
+                         "TagsVisibilityData", "OptionalWorldSize" }) do
+        pcall(function() m[f] = cdo[f] end)
+    end
+    return m
+end
+
+-- Sets icon, name and position of a copy; Simple models replicate all three.
+local function update_copy(m, user, ev, pos)
+    m.Location = pos
+    pcall(function() m.Icon = user:GetCDO().Icons[(ev.type or 0) + 1] end)
+    -- A fresh marker carries a localized default name key; show the German default instead.
+    pcall(function() m:SetShownName(FText(ev.localized and "Neue Markierung" or ev.name)) end)
+    pcall(function() m:Update() end)
+end
+
 local function apply(ev)
     local simple, user = class_of(SIMPLE), class_of(USER)
     if not simple or not user then API.log("warn", "markersync", "marker classes not found"); return end
+    if ev.op == "A" and not born[ev.id] then born[ev.id] = os.time() end
     local self_copy = selftest()
     for acct, comp in pairs(marker_systems()) do
         if acct ~= ev.sender or self_copy then
-            models[acct] = models[acct] or {}
+            local since = session_since(acct, comp)
             local m = models[acct][ev.id]
             local valid = m and m:IsValid()
             if ev.op == "R" then
-                if valid then pcall(function() comp:DestroyMarker(m) end) end
+                if valid and not pcall(function() m:RemoveMarker() end) then
+                    pcall(function() comp:DestroyMarker(m) end)
+                end
                 models[acct][ev.id] = nil
-            else
+            elseif (born[ev.id] or 0) >= since then
+                -- Markers older than this player's login came with the save; a copy would double them.
                 local pos = { X = ev.x + (acct == ev.sender and 2000 or 0), Y = ev.y, Z = ev.z }
                 if not valid then
-                    m = comp:CreateMarker(simple, pos, {})
+                    m = create_copy(comp, simple, user, ev, pos)
                     models[acct][ev.id] = m
-                    pcall(function() m.MarkerGuid = guid(ev.id) end)
-                else
-                    m.Location = pos
                 end
-                pcall(function() m.Icon = user:GetCDO().Icons[(ev.type or 0) + 1] end)
-                -- A fresh marker carries a localized default name key; show a plain word instead.
-                pcall(function() m:SetShownName(FText(ev.localized and "Marker" or ev.name)) end)
-                pcall(function() m:Update() end)
+                update_copy(m, user, ev, pos)
             end
         end
     end
