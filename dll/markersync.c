@@ -41,6 +41,7 @@ static GetAccountId_t get_account_id;
 static FILE *evf;  // marker events for the Lua side (live markers), one line each
 typedef char (*RuleDo_t)(void *rule);
 static RuleDo_t orig_add_do, orig_update_do;
+static __thread int in_net_rule;  // set while RuleRequestServer runs on this thread
 static RuleRequestServer_t orig_rrs;
 static AddServerReactor_t orig_asr;
 static void *volatile session;
@@ -208,7 +209,18 @@ static void replay(void *reactor, void *request, void *a3, void *a4, char *reqid
     memcpy(reqid, old_req, ID_LEN); memcpy(pid, old_pid, ID_LEN);
 }
 
+static void *hook_rrs_inner(void *reactor, void *request, void *a3, void *a4);
+
 static void *hook_rrs(void *reactor, void *request, void *a3, void *a4) {
+    in_net_rule++;
+    void *ret = hook_rrs_inner(reactor, request, a3, a4);
+    in_net_rule--;
+    return ret;
+}
+
+// Rules arriving over the network, and their replays, must always persist; only rules the
+// server runs locally (CreateMarker on a player state) are candidates for the copy filter.
+static void *hook_rrs_inner(void *reactor, void *request, void *a3, void *a4) {
     if (replaying) return orig_rrs(reactor, request, a3, a4);
 
     size_t nlen = 0, plen = 0, rlen = 0;
@@ -279,7 +291,7 @@ static int is_copy_marker(void *rule) {
 }
 
 static char hook_add_do(void *rule) {
-    if (!is_copy_marker(rule)) return orig_add_do(rule);
+    if (in_net_rule || !is_copy_marker(rule)) return orig_add_do(rule);
     EnterCriticalSection(&lock);
     fprintf(logf, "skipped saving a live copy (add)\n");
     fflush(logf);
@@ -288,7 +300,7 @@ static char hook_add_do(void *rule) {
 }
 
 static char hook_update_do(void *rule) {
-    if (!is_copy_marker(rule)) return orig_update_do(rule);
+    if (in_net_rule || !is_copy_marker(rule)) return orig_update_do(rule);
     EnterCriticalSection(&lock);
     fprintf(logf, "skipped saving a live copy (update)\n");
     fflush(logf);
@@ -375,7 +387,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     MH_STATUS s4 = MH_CreateHook(base + RVA_ADD_MARKER_DO, (void *)hook_add_do, (void **)&orig_add_do);
     MH_STATUS s5 = MH_CreateHook(base + RVA_UPDATE_MARKER_DO, (void *)hook_update_do, (void **)&orig_update_do);
     MH_STATUS s3 = MH_EnableHook(MH_ALL_HOOKS);
-    fprintf(logf, "markersync loaded init=%d rrs=%d asr=%d enable=%d players=%d\n", s0, s1, s2, s3, nplayers);
+    fprintf(logf, "markersync loaded init=%d rrs=%d asr=%d add=%d update=%d enable=%d players=%d\n", s0, s1, s2, s4, s5, s3, nplayers);
     fflush(logf);
     return TRUE;
 }
