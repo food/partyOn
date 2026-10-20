@@ -1,6 +1,10 @@
 """Rebuilds a Windrose world backup zip (RocksDB BackupEngine checkpoint) with all user markers removed.
 
-usage: patch_backup.py <in.zip> <out.zip> [workdir] [--ghosts]
+usage: patch_backup.py <in.zip> <out.zip> [workdir] [--ghosts | --sync]
+
+--ghosts removes only saved live copies, --sync additionally gives every player the union
+of all real markers (what the running mod does for new markers). Without a flag every
+user marker is removed.
 
 The server restores <world>_<version>_Latest.zip over the world DB at every start, so clearing
 the DB alone does not stick. This extracts the checkpoint, rebuilds the DB from it, clears the
@@ -18,7 +22,7 @@ import zipfile
 from rocksdict import AccessType, DBCompressionType, Options, Rdict
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from clear_markers import clear  # noqa: E402
+from clear_markers import clear, sync  # noqa: E402
 
 
 def crc32c(data):
@@ -61,15 +65,20 @@ def open_db(db_dir, write):
                  column_families={cf: db_options() for cf in cfs}), cfs
 
 
-def clear_db(db_dir, ghosts):
+def clear_db(db_dir, ghosts, do_sync):
     db, cfs = open_db(db_dir, True)
     total = 0
     for cf_name in cfs:
         cf = db.get_column_family(cf_name)
         changes = []
-        for k, v in cf.items():
-            if isinstance(v, (bytes, bytearray)) and b"UserMarkers" in v:
-                new, n = clear(bytes(v), ghosts)
+        docs = {k: bytes(v) for k, v in cf.items() if isinstance(v, (bytes, bytearray)) and b"UserMarkers" in v}
+        if do_sync:
+            for k, (new, n) in sync(docs).items():
+                changes.append((k, new, n))
+                print("sync %s/%r: +%d marker(s)" % (cf_name, k[:48], n))
+        else:
+            for k, v in docs.items():
+                new, n = clear(v, ghosts)
                 if new:
                     changes.append((k, new, n))
         for k, new, n in changes:
@@ -135,7 +144,8 @@ def pack(db_dir, seq, old_names, session, extra_files, out_zip):
 
 def main():
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
-    ghosts = "--ghosts" in sys.argv
+    ghosts, do_sync = "--ghosts" in sys.argv, "--sync" in sys.argv
+    ghosts = ghosts or do_sync
     in_zip, out_zip = args[0], args[1]
     work = args[2] if len(args) > 2 else "/tmp/patch_backup"
     shutil.rmtree(work, ignore_errors=True)
@@ -155,9 +165,9 @@ def main():
     db_dir = os.path.join(work, "db")
     rebuild_db(os.path.join(src, "Checkpoint"), db_dir)
     before = count_markers(db_dir, ghosts)
-    removed, seq = clear_db(db_dir, ghosts)
+    removed, seq = clear_db(db_dir, ghosts, do_sync)
     meta = pack(db_dir, seq, old_names, session, extra, out_zip)
-    print("markers before: %d, removed: %d" % (before, removed))
+    print("%s before: %d, %s: %d" % ("ghosts" if ghosts else "markers", before, "added" if do_sync else "removed", removed))
     print(meta)
     # read back: rebuild from the new zip and count again
     check = os.path.join(work, "check")

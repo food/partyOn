@@ -59,19 +59,23 @@ def is_ghost(marker):
     return bool(hit) and hit[0] == 0x02 and b"BP_MarkerModel_Simple" in marker[hit[1]:hit[2]]
 
 
-def clear(doc, ghosts_only=False):
-    """Returns (new_doc, removed_count) or (None, 0) if there is nothing to clear.
-
-    With ghosts_only, keeps real user markers and drops only saved live copies."""
+def markers(doc):
+    """Returns the marker documents of the UserMarkers array, or None if the record has none."""
     hit = find(doc, "UserMarkers")
     if not hit or hit[0] != 0x04:
-        return None, 0
-    _, s, e = hit
-    arr = doc[s:e]
-    kept = [arr[a:b] for _, _, a, b in elements(arr) if ghosts_only and not is_ghost(arr[a:b])]
-    n = count_array(doc, s, e) - len(kept)
-    if n == 0:
-        return None, 0
+        return None
+    arr = doc[hit[1]:hit[2]]
+    return [arr[a:b] for _, _, a, b in elements(arr)]
+
+
+def marker_id(marker):
+    hit = find(marker, "MarkerId")
+    return marker[hit[1] + 4:hit[2] - 1] if hit and hit[0] == 0x02 else None
+
+
+def rebuild(doc, kept):
+    """Replaces the UserMarkers array with the given marker documents and bumps the change revision."""
+    _, s, e = find(doc, "UserMarkers")
     body = b"".join(b"\x03" + str(i).encode() + b"\0" + m for i, m in enumerate(kept))
     new_arr = struct.pack("<i", 4 + len(body) + 1) + body + b"\0"
     new = doc[:s] + new_arr + doc[e:]
@@ -84,7 +88,42 @@ def clear(doc, ghosts_only=False):
             off = meta[1] + rev[1]
             val = struct.unpack_from("<i", new, off)[0]
             new = new[:off] + struct.pack("<i", val + 1) + new[off + 4:]
-    return new, n
+    return new
+
+
+def clear(doc, ghosts_only=False):
+    """Returns (new_doc, removed_count) or (None, 0) if there is nothing to clear.
+
+    With ghosts_only, keeps real user markers and drops only saved live copies."""
+    ms = markers(doc)
+    if ms is None:
+        return None, 0
+    kept = [m for m in ms if ghosts_only and not is_ghost(m)]
+    n = len(ms) - len(kept)
+    if n == 0:
+        return None, 0
+    return rebuild(doc, kept), n
+
+
+def sync(docs):
+    """Gives every record the union of all real markers, keyed by MarkerId, and drops ghosts.
+
+    docs maps record key -> document; returns {key: (new_doc, added_count)} for changed records."""
+    union, real = {}, {}
+    for k, doc in docs.items():
+        ms = markers(doc)
+        if ms is None:
+            continue
+        real[k] = [m for m in ms if not is_ghost(m)]
+        for m in real[k]:
+            union.setdefault(marker_id(m), m)
+    out = {}
+    for k, mine in real.items():
+        have = {marker_id(m) for m in mine}
+        missing = [m for i, m in union.items() if i not in have]
+        if missing or len(mine) != len(markers(docs[k])):
+            out[k] = (rebuild(docs[k], mine + missing), len(missing))
+    return out
 
 
 def main():
