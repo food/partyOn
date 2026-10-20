@@ -1,7 +1,7 @@
 """Clears the UserMarkers of every PlayerInWorld record in a Windrose world DB (server stopped!).
 
-usage: clear_markers.py <world-db-dir> [--apply]
-Without --apply it only lists what it would change. Values are BSON documents; the array is
+usage: clear_markers.py <world-db-dir> [--apply] [--ghosts]
+Without --apply it only lists what it would change; --ghosts removes only saved live copies. Values are BSON documents; the array is
 emptied and _meta.ChangeRevision is bumped so clients drop their cached copy.
 """
 import struct
@@ -53,17 +53,28 @@ def count_array(doc, s, e):
     return sum(1 for _ in elements(doc[s:e]))
 
 
-def clear(doc):
-    """Returns (new_doc, removed_count) or (None, 0) if there is nothing to clear."""
+def is_ghost(marker):
+    """A live copy that the server saved: its class is the Simple marker model."""
+    hit = find(marker, "MarkerClass")
+    return bool(hit) and hit[0] == 0x02 and b"BP_MarkerModel_Simple" in marker[hit[1]:hit[2]]
+
+
+def clear(doc, ghosts_only=False):
+    """Returns (new_doc, removed_count) or (None, 0) if there is nothing to clear.
+
+    With ghosts_only, keeps real user markers and drops only saved live copies."""
     hit = find(doc, "UserMarkers")
     if not hit or hit[0] != 0x04:
         return None, 0
     _, s, e = hit
-    n = count_array(doc, s, e)
+    arr = doc[s:e]
+    kept = [arr[a:b] for _, _, a, b in elements(arr) if ghosts_only and not is_ghost(arr[a:b])]
+    n = count_array(doc, s, e) - len(kept)
     if n == 0:
         return None, 0
-    empty = struct.pack("<i", 5) + b"\0"
-    new = doc[:s] + empty + doc[e:]
+    body = b"".join(b"\x03" + str(i).encode() + b"\0" + m for i, m in enumerate(kept))
+    new_arr = struct.pack("<i", 4 + len(body) + 1) + body + b"\0"
+    new = doc[:s] + new_arr + doc[e:]
     new = struct.pack("<i", len(new)) + new[4:]
     meta = find(new, "_meta")
     if meta and meta[0] == 0x03:
@@ -77,7 +88,7 @@ def clear(doc):
 
 
 def main():
-    path, apply = sys.argv[1], "--apply" in sys.argv
+    path, apply, ghosts = sys.argv[1], "--apply" in sys.argv, "--ghosts" in sys.argv
     cfs = Rdict.list_cf(path)
     opts = Options(raw_mode=True)
     db = Rdict(path, options=opts, access_type=AccessType.read_write() if apply else AccessType.read_only(),
@@ -90,7 +101,7 @@ def main():
             if not isinstance(v, (bytes, bytearray)) or b"UserMarkers" not in v:
                 continue
             try:
-                new, n = clear(bytes(v))
+                new, n = clear(bytes(v), ghosts)
             except Exception as exc:  # unknown layout: report, never write
                 print("skip %s/%r: %s" % (cf_name, k[:40], exc))
                 continue

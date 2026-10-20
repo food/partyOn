@@ -1,6 +1,6 @@
 """Rebuilds a Windrose world backup zip (RocksDB BackupEngine checkpoint) with all user markers removed.
 
-usage: patch_backup.py <in.zip> <out.zip> [workdir]
+usage: patch_backup.py <in.zip> <out.zip> [workdir] [--ghosts]
 
 The server restores <world>_<version>_Latest.zip over the world DB at every start, so clearing
 the DB alone does not stick. This extracts the checkpoint, rebuilds the DB from it, clears the
@@ -50,6 +50,7 @@ def rebuild_db(checkpoint, db_dir):
 def db_options():
     o = Options(raw_mode=True)
     o.set_compression_type(DBCompressionType.none())
+    o.set_disable_auto_compactions(True)  # keep the file set predictable until close
     return o
 
 
@@ -60,7 +61,7 @@ def open_db(db_dir, write):
                  column_families={cf: db_options() for cf in cfs}), cfs
 
 
-def clear_db(db_dir):
+def clear_db(db_dir, ghosts):
     db, cfs = open_db(db_dir, True)
     total = 0
     for cf_name in cfs:
@@ -68,41 +69,37 @@ def clear_db(db_dir):
         changes = []
         for k, v in cf.items():
             if isinstance(v, (bytes, bytearray)) and b"UserMarkers" in v:
-                new, n = clear(bytes(v))
+                new, n = clear(bytes(v), ghosts)
                 if new:
                     changes.append((k, new, n))
         for k, new, n in changes:
             cf.put(k, new)
             total += n
     db.flush()
-    live = sorted(os.path.basename(f.name) if hasattr(f, "name") else os.path.basename(f["name"])
-                  for f in db.live_files())
     seq = db.latest_sequence_number()
-    db.close()
-    return total, live, seq
+    db.close()  # obsolete files are gone after this; the directory is the live set
+    return total, seq
 
 
-def count_markers(db_dir):
+def count_markers(db_dir, ghosts=False):
     db, cfs = open_db(db_dir, False)
     n = 0
     for cf_name in cfs:
         for k, v in db.get_column_family(cf_name).items():
             if isinstance(v, (bytes, bytearray)) and b"UserMarkers" in v:
-                _, removed = clear(bytes(v))
+                _, removed = clear(bytes(v), ghosts)
                 n += removed
     db.close()
     return n
 
 
-def pack(db_dir, live_ssts, seq, old_names, session, extra_files, out_zip):
+def pack(db_dir, seq, old_names, session, extra_files, out_zip):
     """Writes the new checkpoint zip. old_names maps sst number -> original shared name."""
     entries = []  # (zip path, local path)
     for name in sorted(os.listdir(db_dir)):
         local = os.path.join(db_dir, name)
         num, ext = name.rsplit(".", 1)[0], name.rsplit(".", 1)[1] if "." in name else ""
         if ext == "sst":
-            if name not in live_ssts:
-                continue
             crc = file_crc(local)
             shared = old_names.get(num)
             if shared and old_names[num + ".crc"] == crc:
@@ -137,8 +134,10 @@ def pack(db_dir, live_ssts, seq, old_names, session, extra_files, out_zip):
 
 
 def main():
-    in_zip, out_zip = sys.argv[1], sys.argv[2]
-    work = sys.argv[3] if len(sys.argv) > 3 else "/tmp/patch_backup"
+    args = [a for a in sys.argv[1:] if not a.startswith("--")]
+    ghosts = "--ghosts" in sys.argv
+    in_zip, out_zip = args[0], args[1]
+    work = args[2] if len(args) > 2 else "/tmp/patch_backup"
     shutil.rmtree(work, ignore_errors=True)
     os.makedirs(work, exist_ok=True)
     src = os.path.join(work, "src")
@@ -155,9 +154,9 @@ def main():
             session = name.split("_")[1][1:]  # any session id works for the restore, borrow one
     db_dir = os.path.join(work, "db")
     rebuild_db(os.path.join(src, "Checkpoint"), db_dir)
-    before = count_markers(db_dir)
-    removed, live, seq = clear_db(db_dir)
-    meta = pack(db_dir, set(live), seq, old_names, session, extra, out_zip)
+    before = count_markers(db_dir, ghosts)
+    removed, seq = clear_db(db_dir, ghosts)
+    meta = pack(db_dir, seq, old_names, session, extra, out_zip)
     print("markers before: %d, removed: %d" % (before, removed))
     print(meta)
     # read back: rebuild from the new zip and count again
@@ -166,8 +165,8 @@ def main():
         z.extractall(check)
     check_db = os.path.join(work, "check_db")
     rebuild_db(os.path.join(check, "Checkpoint"), check_db)
-    after = count_markers(check_db)
-    print("markers in new zip: %d" % after)
+    after = count_markers(check_db, ghosts)
+    print("%s left in new zip: %d, user markers kept: %d" % ("ghosts" if ghosts else "markers", after, count_markers(check_db) - after))
     if after != 0:
         raise SystemExit("new zip still has markers")
 
