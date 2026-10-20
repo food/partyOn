@@ -1,13 +1,18 @@
 -- Live markers: the DLL writes one line per marker action of a player to markersync_events.txt.
 -- For every other online player we create, move, rename or destroy a server-side marker model
--- on their R5MarkersSystemComponent. Those models replicate to the client and show up at once.
+-- on their R5MarkersSystemComponent. Those models replicate to their owner and show up at once.
 -- The DLL's rule replay keeps the save in sync, so after a relog the marker comes from the save.
+--
+-- The live copy is a Simple marker model, not a User one: R5MarkerModelBase does not replicate
+-- MarkerType (the user marker's icon index), R5MarkerModelSimple replicates its Icon texture.
+-- The texture is taken from the user marker class's own icon list, Icons[type].
 --
 -- Line: A|U <tab> senderAccount <tab> markerId <tab> x <tab> y <tab> z <tab> type <tab> localized <tab> name
 --       R   <tab> senderAccount <tab> markerId
 local API = WindrosePlus.API
 local EVENTS = "Z:/home/steam/server-files/windrose_plus_data/markersync_events.txt"
-local CLASS = "/Game/UI/HUD/Navigation/MarkerModels/BP_MarkerModel_User.BP_MarkerModel_User_C"
+local USER = "/Game/UI/HUD/Navigation/MarkerModels/BP_MarkerModel_User"
+local SIMPLE = "/Game/UI/HUD/Navigation/MarkerModels/BP_MarkerModel_Simple"
 
 local offset = 0
 do  -- skip events from before a Lua reload, they were already applied
@@ -17,11 +22,12 @@ end
 
 local models = {}  -- models[account][markerId] = marker model
 
-local function marker_class()
-    local cls = StaticFindObject(CLASS)
+local function class_of(asset)
+    local path = asset .. "." .. asset:match("[^/]+$") .. "_C"
+    local cls = StaticFindObject(path)
     if not cls or not cls:IsValid() then
-        pcall(LoadAsset, "/Game/UI/HUD/Navigation/MarkerModels/BP_MarkerModel_User")
-        cls = StaticFindObject(CLASS)
+        pcall(LoadAsset, asset)
+        cls = StaticFindObject(path)
     end
     return cls and cls:IsValid() and cls or nil
 end
@@ -41,10 +47,19 @@ local function guid(hex)
     return { A = part(1), B = part(9), C = part(17), D = part(25) }
 end
 
+-- Self-test (flag file markersync_selftest_live): the sender also gets a live copy 20 m east.
+local function selftest()
+    local f = io.open("Z:/home/steam/server-files/windrose_plus_data/markersync_selftest_live", "r")
+    if f then f:close() return true end
+    return false
+end
+
 local function apply(ev)
-    local systems = marker_systems()
-    for acct, comp in pairs(systems) do
-        if acct ~= ev.sender then
+    local simple, user = class_of(SIMPLE), class_of(USER)
+    if not simple or not user then API.log("warn", "markersync", "marker classes not found"); return end
+    local self_copy = selftest()
+    for acct, comp in pairs(marker_systems()) do
+        if acct ~= ev.sender or self_copy then
             models[acct] = models[acct] or {}
             local m = models[acct][ev.id]
             local valid = m and m:IsValid()
@@ -52,19 +67,17 @@ local function apply(ev)
                 if valid then pcall(function() comp:DestroyMarker(m) end) end
                 models[acct][ev.id] = nil
             else
-                local pos = { X = ev.x, Y = ev.y, Z = ev.z }
+                local pos = { X = ev.x + (acct == ev.sender and 2000 or 0), Y = ev.y, Z = ev.z }
                 if not valid then
-                    local cls = marker_class()
-                    if not cls then API.log("warn", "markersync", "marker class not found"); return end
-                    m = comp:CreateMarker(cls, pos, {})
+                    m = comp:CreateMarker(simple, pos, {})
                     models[acct][ev.id] = m
                     pcall(function() m.MarkerGuid = guid(ev.id) end)
                 else
                     m.Location = pos
                 end
+                pcall(function() m.Icon = user:GetCDO().Icons[(ev.type or 0) + 1] end)
                 -- A fresh marker carries a localized default name key; show a plain word instead.
                 pcall(function() m:SetShownName(FText(ev.localized and "Marker" or ev.name)) end)
-                pcall(function() m:SetIcon(ev.type) end)
                 pcall(function() m:Update() end)
             end
         end
@@ -94,7 +107,7 @@ local function poll()
     local data = f:read("a")
     f:close()
     local consumed = 0
-    for line, nl in data:gmatch("([^\n]*)(\n)") do
+    for line in data:gmatch("([^\n]*)\n") do
         consumed = consumed + #line + 1
         local ev = parse(line)
         if ev then
@@ -105,34 +118,27 @@ local function poll()
     offset = offset + consumed  -- a half-written last line is read next time
 end
 
--- ExecuteInGameThread never drains here (Windrose+ runs with HookEngineTick=0), so poll runs
--- straight from the async loop, the same way Windrose+ runs its own UObject writers and RCON commands.
-local busy = false
-LoopAsync(300, function()
-    if not busy then
-        busy = true
-        local ok, err = pcall(poll)
-        if not ok then API.log("warn", "markersync", "poll failed: " .. tostring(err)) end
-        busy = false
-    end
-    return false
+-- UObjects may only be touched on the game thread. ExecuteInGameThread does not work here
+-- (Windrose+ must run with HookEngineTick=0), so we piggyback on ServerMovePacked, a client RPC
+-- the server executes on the game thread every frame while a player moves.
+-- Do not hot-reload this mod: a reload with this hook active takes the server down. Restart instead.
+local polls, last = 0, 0
+RegisterHook("/Script/Engine.Character:ServerMovePacked", function()
+    local now = os.clock()
+    if now - last < 0.25 then return end
+    last = now
+    polls = polls + 1
+    local ok, err = pcall(poll)
+    if not ok then API.log("warn", "markersync", "poll failed: " .. tostring(err)) end
 end)
 API.log("info", "markersync", "live markers active")
 
-local polls = 0
-local _poll = poll
-poll = function() polls = polls + 1; return _poll() end
-
 API.registerCommand("wp.msync", function(args)
-    local out = { string.format("offset=%d busy=%s polls=%d", offset, tostring(busy), polls) }
-    for acct, c in pairs(marker_systems()) do
+    local out = { string.format("offset=%d polls=%d", offset, polls) }
+    for acct, list in pairs(models) do
         local n = 0
-        for _ in pairs(models[acct] or {}) do n = n + 1 end
-        out[#out + 1] = string.format("  %s -> %s (%d models)", acct, c:GetFullName(), n)
-    end
-    if args[1] == "poll" then
-        local ok, err = pcall(_poll)
-        out[#out + 1] = "manual poll: " .. tostring(ok) .. " " .. tostring(err) .. " offset now " .. offset
+        for _ in pairs(list) do n = n + 1 end
+        out[#out + 1] = string.format("  %s: %d models", acct, n)
     end
     return table.concat(out, "\n")
-end, "markersync live status", "wp.msync [poll]")
+end, "markersync live status", "wp.msync")

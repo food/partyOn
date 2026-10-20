@@ -156,3 +156,31 @@ API.registerCommand("wp.acct", function(args)
     end
     return table.concat(out, "\n")
 end, "Dump PlayerState.AccountData", "wp.acct")
+
+-- wp.hookcount: registers counting hooks on candidate UFunctions; wp.hookcount show prints counts.
+local hookcounts = {}
+API.registerCommand("wp.hookcount", function(args)
+    if args[1] == "show" then
+        local out = {}
+        for k, v in pairs(hookcounts) do out[#out + 1] = string.format("%6d  %s", v.n, k) end
+        table.sort(out)
+        return table.concat(out, "\n")
+    end
+    local candidates = {
+        "/Script/Engine.Character:ServerMovePacked",
+        "/Script/Engine.Character:ServerMove",
+        "/Script/Engine.Character:ServerMoveNoBase",
+        "/Script/Engine.PlayerController:ServerUpdateCamera",
+        "/Script/Engine.PlayerController:ServerSetSpectatorLocation",
+        "/Script/Engine.PlayerController:ClientAckGoodMove",
+        "/Script/Engine.PlayerController:ServerShortTimeout",
+        "/Script/Engine.Actor:ReceiveTick",
+        "/Script/R5.R5PlayerState:OnPreDisconnectFromServer",
+    }
+    for _, path in ipairs(candidates) do
+        local entry = { n = 0 }
+        local ok, err = pcall(function() RegisterHook(path, function() entry.n = entry.n + 1 end) end)
+        hookcounts[path] = ok and entry or { n = -1 }
+    end
+    return "hooks registered (n=-1 means failed)"
+end, "count calls of candidate UFunctions", "wp.hookcount [show]")
