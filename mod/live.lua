@@ -91,6 +91,14 @@ local function update_copy(m, user, ev, pos)
     pcall(function() m:Update() end)
 end
 
+-- RemoveMarker is the model's own API and leaves the markers observer clean; DestroyMarker
+-- on the component is the fallback.
+local function remove_copy(comp, m)
+    if not pcall(function() m:RemoveMarker() end) then
+        pcall(function() comp:DestroyMarker(m) end)
+    end
+end
+
 local function apply(ev)
     local simple, user = class_of(SIMPLE), class_of(USER)
     if not simple or not user then API.log("warn", "markersync", "marker classes not found"); return end
@@ -102,13 +110,20 @@ local function apply(ev)
             local m = models[acct][ev.id]
             local valid = m and m:IsValid()
             if ev.op == "R" then
-                if valid and not pcall(function() m:RemoveMarker() end) then
-                    pcall(function() comp:DestroyMarker(m) end)
-                end
+                if valid then remove_copy(comp, m) end
                 models[acct][ev.id] = nil
             elseif (born[ev.id] or 0) >= since then
                 -- Markers older than this player's login came with the save; a copy would double them.
                 local pos = { X = ev.x + (acct == ev.sender and 2000 or 0), Y = ev.y, Z = ev.z }
+                local name = ev.localized and "Neue Markierung" or ev.name
+                if valid then
+                    -- Location and Icon replicate on change, ShownName only with the first replication.
+                    local ok, cur = pcall(function() return m.ShownName:ToString() end)
+                    if not ok or cur ~= name then
+                        remove_copy(comp, m)
+                        valid = false
+                    end
+                end
                 if not valid then
                     m = create_copy(comp, simple, user, ev, pos)
                     models[acct][ev.id] = m
