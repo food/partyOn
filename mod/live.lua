@@ -91,12 +91,10 @@ local function update_copy(m, user, ev, pos)
     pcall(function() m:Update() end)
 end
 
--- RemoveMarker is the model's own API and leaves the markers observer clean; DestroyMarker
--- on the component is the fallback.
+-- DestroyMarker on the component is what replicates the removal to the client; the model's
+-- own RemoveMarker only detached it on the server and the copy stayed visible.
 local function remove_copy(comp, m)
-    if not pcall(function() m:RemoveMarker() end) then
-        pcall(function() comp:DestroyMarker(m) end)
-    end
+    pcall(function() comp:DestroyMarker(m) end)
 end
 
 local function apply(ev)
@@ -169,26 +167,30 @@ local function poll()
 end
 
 -- UObjects may only be touched on the game thread. ExecuteInGameThread does not work here
--- (Windrose+ must run with HookEngineTick=0), so we piggyback on ServerMovePacked, a client RPC
--- the server executes on the game thread every frame while a player moves.
--- Do not hot-reload this mod: a reload with this hook active takes the server down. Restart instead.
+-- (Windrose+ must run with HookEngineTick=0), so we piggyback on client RPCs the server runs on
+-- the game thread: ServerMovePacked while a player moves, ServerUpdateCamera while one looks around.
+-- Do not hot-reload this mod: a reload with these hooks active takes the server down. Restart instead.
 local polls, last = 0, 0
-RegisterHook("/Script/Engine.Character:ServerMovePacked", function()
+local function tick()
     local now = os.clock()
     if now - last < 0.25 then return end
     last = now
     polls = polls + 1
     local ok, err = pcall(poll)
     if not ok then API.log("warn", "markersync", "poll failed: " .. tostring(err)) end
-end)
+end
+RegisterHook("/Script/Engine.Character:ServerMovePacked", tick)
+RegisterHook("/Script/Engine.PlayerController:ServerUpdateCamera", tick)
 API.log("info", "markersync", "live markers active")
 
 API.registerCommand("wp.msync", function(args)
     local out = { string.format("offset=%d polls=%d", offset, polls) }
     for acct, list in pairs(models) do
-        local n = 0
-        for _ in pairs(list) do n = n + 1 end
-        out[#out + 1] = string.format("  %s: %d models", acct, n)
+        for id, m in pairs(list) do
+            local okN, name = pcall(function() return m.ShownName:ToString() end)
+            out[#out + 1] = string.format("  %s %s valid=%s name=%s", acct:sub(1, 8), id:sub(1, 8),
+                tostring(m:IsValid()), okN and name or "?")
+        end
     end
     return table.concat(out, "\n")
 end, "markersync live status", "wp.msync")
