@@ -115,6 +115,7 @@ static void learn_player(const char *id) {
 static struct { char acct[ID_LEN]; char pid[ID_LEN]; } owners[MAX_PLAYERS];
 static int nowners;
 
+// markersync_accounts.txt: one "AccountId PlayerId" line per account.
 static void save_owners(void) {
     FILE *f = fopen(DATA_DIR "markersync_accounts.txt", "w");
     if (!f) return;
@@ -138,7 +139,10 @@ static void load_owners(void) {
 static const char *owner_of(const char *acct, const char *pid) {
     for (int i = 0; i < nowners; i++)
         if (!memcmp(owners[i].acct, acct, ID_LEN)) return owners[i].pid;
-    if (nowners == MAX_PLAYERS) return pid;
+    if (nowners == MAX_PLAYERS) {
+        fprintf(logf, "  account table full, %.32s not stored\n", acct);
+        return pid;
+    }
     memcpy(owners[nowners].acct, acct, ID_LEN);
     memcpy(owners[nowners].pid, pid, ID_LEN);
     fprintf(logf, "account %.32s plays %.32s\n", acct, pid);
@@ -360,8 +364,10 @@ static void *hook_asr(void *s, void *reactor_sp, void *a3, void *a4) {
     session = s;
     EnterCriticalSection(&lock);
     void *r = deref(reactor_sp, 0);
-    for (int i = 0; i < MAX_PLAYERS; i++)
+    for (int i = 0; i < MAX_PLAYERS; i++) {  // a reused address is a new connection
         if (accounts[i].reactor == r) accounts[i].reactor = NULL;
+        if (links[i].reactor == r) links[i].reactor = NULL;
+    }
     fprintf(logf, "AddServerReactor session=%p reactor=%p\n", s, r);
     fflush(logf);
     LeaveCriticalSection(&lock);

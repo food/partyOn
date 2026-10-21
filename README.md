@@ -48,6 +48,8 @@ connections, persisted in `windrose_plus_data/markersync_accounts.txt`
 connection, and their events name that PlayerId as sender, so every real player
 gets the live copy. An account whose first marker rule comes from the bot is
 learned wrong; add the line by hand before using the bot with a new account.
+The same goes for a new character on a known account: its markers count as sent
+on someone's behalf until the account's line is fixed by hand.
 
 Hook and call addresses are fixed RVAs for game build `0.10.0.9.32`. Before hooking, the
 DLL compares 32 bytes of each target. After a game update it logs
