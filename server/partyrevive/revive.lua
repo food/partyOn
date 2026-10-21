@@ -97,7 +97,7 @@ local function make_ghost(name)
     local up = { X = s.death.X, Y = s.death.Y, Z = s.death.Z + HOVER }
     pawn:K2_TeleportTo(up, pawn:K2_GetActorRotation())
     set_ghost(ps, pawn, true)
-    log("ghost %s above %.0f %.0f %.0f", name, s.death.X, s.death.Y, s.death.Z)
+    log("ghost %s above %.0f %.0f %.0f (%s)", name, s.death.X, s.death.Y, s.death.Z, pawn:GetFullName())
 end
 
 -- Ends the ghost state at `to` (death spot on help, save point on cancel).
@@ -138,16 +138,27 @@ end
 local queue = {}
 local function push(job) queue[#queue + 1] = job end
 
--- The respawned pawn may not be possessed yet when the job runs; retry on later ticks.
-local function ghost_when_respawned(name, tries)
-    local s, ps = state(name), find_ps(name)
-    local p = ps and pawn_of(ps)
-    if not s.want_ghost or is_ghost(name) then return end
-    if p and p:GetFullName() ~= s.dead_pawn then return make_ghost(name) end
-    if tries > 0 then push(function() ghost_when_respawned(name, tries - 1) end) end
+-- A player who chose to wait becomes a ghost as soon as he has a pawn that is not the dead one.
+-- Polled from the tick: the possession hook came too early or not at all when "wait" was picked
+-- before the respawn (21.10.2026).
+local function ghost_pending()
+    for name, s in pairs(players) do
+        if s.want_ghost and not s.back then
+            if os.time() - (s.died_at or 0) > LATE_WAIT + 30 then
+                s.want_ghost = nil
+                log("ghost %s: gave up, no respawned pawn", name)
+            else
+                -- Only a player character counts; the death camera may use another pawn class.
+                local ps = find_ps(name)
+                local p = ps and pawn_of(ps)
+                if p and p:GetFullName() ~= s.dead_pawn and p:GetClass():GetFName():ToString():find("R5Character", 1, true) then
+                    make_ghost(name)
+                end
+            end
+        end
+    end
 end
 
--- Runs the jobs queued so far; jobs pushed while running (retries) wait for the next tick.
 local function tick()
     local jobs = queue
     queue = {}
@@ -155,6 +166,8 @@ local function tick()
         local ok, err = pcall(job)
         if not ok then log("job failed: %s", tostring(err)) end
     end
+    local ok, err = pcall(ghost_pending)
+    if not ok then log("ghost_pending failed: %s", tostring(err)) end
 end
 RegisterHook("/Script/Engine.Character:ServerMovePacked", tick)
 RegisterHook("/Script/Engine.PlayerController:ServerUpdateCamera", tick)
@@ -170,14 +183,6 @@ RegisterHook("/Script/R5.R5ReviveComponent:OnPawnDead", function(self, actor)
     end)
 end)
 
--- Fires (twice) when the respawned pawn is possessed; also on login, where nothing is wanted.
-RegisterHook("/Script/R5.R5ReviveComponent:OnPossessedChanged", function(self)
-    pcall(function()
-        local name = name_of(self:get():GetOwner())
-        if players[name] and players[name].want_ghost then push(function() ghost_when_respawned(name, 200) end) end
-    end)
-end)
-
 RegisterHook("/Script/Engine.PlayerController:ServerExecRPC", function(self, msg)
     local ok, text, name = pcall(function()
         return msg:get():ToString(), name_of(self:get().PlayerState)
@@ -190,13 +195,6 @@ RegisterHook("/Script/Engine.PlayerController:ServerExecRPC", function(self, msg
     if cmd == "wait" then
         if not s.died_at or os.time() - s.died_at > LATE_WAIT then return end
         s.want_ghost = true
-        -- Chosen after the respawn already happened (pawn is not the dead one): ghost right away;
-        -- otherwise OnPossessedChanged picks it up.
-        push(function()
-            local ps = find_ps(name)
-            local p = ps and pawn_of(ps)
-            if p and p:GetFullName() ~= s.dead_pawn then ghost_when_respawned(name, 0) end
-        end)
     elseif cmd == "respawn" then
         s.want_ghost = nil
     elseif cmd == "cancel" then

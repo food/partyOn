@@ -229,9 +229,10 @@ local function send(cmd)
 end
 
 -- Own revive state from own health and ghost flag; returns the prompt line for it.
-local function own_prompt(hp, ghost)
+local function own_prompt(hp, max, ghost)
     local now = os.time()
-    if hp and hp <= 0 and not me.died_at then me.died_at, me.choice = now, nil end
+    -- Right after login the attribute set reads 0/0 until the game fills it; that is no death.
+    if hp and max and max > 0 and hp <= 0 and not me.died_at then me.died_at, me.choice = now, nil end
     if ghost then
         me.was_ghost = true
         return string.format("Geist: du wartest auf Hilfe.   [%s] Abbruch", CFG.key_cancel)
@@ -272,14 +273,14 @@ local function update()
     local here = my_pawn and my_pawn:K2_GetActorLocation()
     local my_ghost = my_pawn ~= nil and is_ghost(my_pawn)
     local best, best_d = nil, nil
-    local my_hp
+    local my_hp, my_max
     gs.PlayerArray:ForEach(function(_, ref)
         local ps = ref:get()
         local name = fstr(ps.PlayerNamePrivate)
         local p = parts_of(name, ps)
         if not valid(p.set) then return end
         local hp, max = p.set.Health.CurrentValue, p.set.MaxHealth.CurrentValue
-        if name == my_name then my_hp = hp; return end
+        if name == my_name then my_hp, my_max = hp, max; return end
         local pawn = pawn_of(ps)
         local ghost = pawn ~= nil and is_ghost(pawn)
         if ghost and here and not my_ghost then
@@ -301,7 +302,7 @@ local function update()
     end
     arrange(names)
     help_target = best
-    local text = own_prompt(my_hp, my_ghost)
+    local text = own_prompt(my_hp, my_max, my_ghost)
     if not text and best then text = string.format("[%s] Wiederbeleben: %s", CFG.key_help, best) end
     set_prompt(text)
 end
