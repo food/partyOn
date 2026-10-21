@@ -13,7 +13,7 @@
 local CFG = {
     x = 40, y = 300, scale = 1.0, combat_seconds = 10, toggle_key = "F9",
     key_respawn = "F5", key_wait = "F6", key_cancel = "F5", key_help = "F7",
-    marker = "fire", fire_color = { R = 0, G = 1, B = 0, A = 1 }, fire_scale = 1.0,
+    marker = "fire", fire_scale = 1.0,
 }
 local ok_cfg, user_cfg = pcall(require, "config")
 if ok_cfg and type(user_cfg) == "table" then
@@ -306,8 +306,8 @@ local function spawn_beam(spot)
     return a
 end
 
--- The game's signal fire effect, tinted through its FireTint parameter (found in the package's
--- name map). Which name the component takes is tried at runtime, both are set.
+-- The game's signal fire effect. It exposes no user parameters, so its color cannot be changed
+-- (FireTint is internal; checked 21.10.2026).
 local FIRE_PATH = "/Game/FX/Particles/Environment/Fire/FX_SignalFire.FX_SignalFire"
 
 local function spawn_fire(spot)
@@ -320,11 +320,6 @@ local function spawn_fire(spot)
     local c = lib:SpawnSystemAtLocation(pc, system, spot, { Pitch = 0, Yaw = 0, Roll = 0 },
         { X = CFG.fire_scale, Y = CFG.fire_scale, Z = CFG.fire_scale }, false, true, 0, false)
     if not valid(c) then return nil end
-    local color = CFG.fire_color
-    for _, n in ipairs({ "FireTint", "User.FireTint" }) do
-        pcall(function() c:SetVariableLinearColor(FName(n), color) end)
-        pcall(function() c:SetColorParameter(FName(n), color) end)
-    end
     return c
 end
 
