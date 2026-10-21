@@ -5,7 +5,12 @@ player with name, value and health bar, sorted by name. A row turns orange with 
 few seconds after the player loses health, and grey with "tot" at zero. F9 hides and shows the
 panel.
 
-Settings (position, scale, combat seconds, toggle key) are in
+Revive (needs the server mod `server/partyrevive`): after death the player picks F5 respawn
+(as usual) or F6 wait. A waiting player hangs as an invisible ghost above his death spot until
+a teammate within 5 m presses F7, which puts him back on his feet there; F5 cancels and
+respawns at the save point.
+
+Settings (position, scale, combat seconds, revive keys, toggle key) are in
 `mod/PartyHud/Scripts/config.lua`; Ctrl+R in game reloads them when UE4SS hot reload is on.
 
 Status: P2 done, see `docs/plan.md`.
@@ -18,7 +23,9 @@ Status: P2 done, see `docs/plan.md`.
 3. Copy `mod/PartyHud` to `ue4ss\Mods\` and add `PartyHud : 1` to `Mods\mods.txt` (above the
    `Keybinds` line). Same for `probe/PartyHudProbe` if you want the probe.
 
-Every player who wants the panel installs it; the server needs nothing.
+Every player who wants the panel installs it. The panel alone needs nothing on the server;
+revive needs `server/partyrevive` as a Windrose+ mod (copy to `windrose_plus_mods/partyrevive/`,
+add `"partyrevive"` to `mods_registry.json`, restart).
 
 Uninstall: delete `dwmapi.dll` and `ue4ss\`.
 
