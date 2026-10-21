@@ -118,6 +118,16 @@ RegisterKeyBind(Key.F7, function()
     end)
 end)
 
+-- P3 spike: F6 sends a test message to the server through PlayerController:ServerExecRPC.
+RegisterKeyBind(Key.F6, function()
+    ExecuteInGameThread(function()
+        local ok, err = pcall(function()
+            FindFirstOf("PlayerController"):ServerExecRPC("partyhud ping " .. os.date("%H:%M:%S"))
+        end)
+        print("[PartyHudProbe] ServerExecRPC sent: " .. tostring(ok) .. " " .. tostring(err or "") .. "\n")
+    end)
+end)
+
 RegisterKeyBind(Key.F8, function()
     watching = not watching
     last = {}
