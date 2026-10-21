@@ -21,6 +21,11 @@ end
 
 local UPDATE_MS = 250
 local WIDGET_NAME = "PartyHudWidget"
+-- A hot reload (Ctrl+R) can leave the previous instance's loop running with its own widget and
+-- state. Every instance tags its widget with a generation; an older one retires when it sees a
+-- newer widget.
+local GEN = os.time() * 1000 + math.random(0, 999)
+local retired = false
 local COMBAT_TAG = "GAS.Animation.State.Combat"
 local COLOR = {
     normal = { R = 1, G = 1, B = 1, A = 1 },
@@ -97,20 +102,31 @@ local function in_combat(name, hp, asc)
     return now - f.at < CFG.combat_seconds
 end
 
--- A hot reload leaves the old widget in the viewport, so drop every earlier copy first.
-local function remove_old()
+-- Generations of all PartyHud widgets in the viewport. Names are unique per generation: with a
+-- shared name a reloaded instance got the old widget object back and both wrote into it.
+local function widget_gens()
+    local out = {}
     for _, w in ipairs(FindAllOf("UserWidget") or {}) do
-        if w:GetFName():ToString():find(WIDGET_NAME, 1, true) then
-            pcall(function() w:RemoveFromParent() end)
-        end
+        local gen = tonumber(w:GetFName():ToString():match("^" .. WIDGET_NAME .. "_(%d+)"))
+        if gen then out[#out + 1] = { gen = gen, widget = w } end
     end
+    return out
+end
+
+local function newer_instance_running()
+    for _, e in ipairs(widget_gens()) do
+        if e.gen > GEN then return true end
+    end
+    return false
 end
 
 local function build()
-    remove_old()
+    for _, e in ipairs(widget_gens()) do
+        if e.gen <= GEN then pcall(function() e.widget:RemoveFromParent() end) end
+    end
     local gi = FindFirstOf("GameInstance")
     if not valid(gi) then return nil end
-    local widget = new("/Script/UMG.UserWidget", gi, WIDGET_NAME)
+    local widget = new("/Script/UMG.UserWidget", gi, WIDGET_NAME .. "_" .. GEN .. "_" .. math.random(0, 1e6))
     local tree = new("/Script/UMG.WidgetTree", widget, "PartyHudTree")
     widget.WidgetTree = tree
     local canvas = new("/Script/UMG.CanvasPanel", tree, "PartyHudCanvas")
@@ -233,9 +249,19 @@ local function set_prompt(text)
     if hud.prompt_text == text then return end
     hud.prompt:SetText(FText(text))
     hud.prompt_text = text
+    print(string.format("[PartyHud] %d prompt: %s\n", GEN, text))
 end
 
+local ticks = 0
+
 local function update()
+    ticks = ticks + 1
+    if ticks % 8 == 0 and newer_instance_running() then
+        retired = true
+        if hud and valid(hud.widget) then pcall(function() hud.widget:RemoveFromParent() end) end
+        print(string.format("[PartyHud] %d retired, a newer instance runs\n", GEN))
+        return
+    end
     if not hud or not valid(hud.widget) then hud = build() end
     if not hud then return end
     local gs = FindFirstOf("GameStateBase")
@@ -297,6 +323,7 @@ for _, a in ipairs(ACTIONS) do
     if Key[a.key] and not bound[a.key] then
         bound[a.key] = true
         RegisterKeyBind(Key[a.key], function()
+            if retired then return end
             ExecuteInGameThread(function()
                 for _, b in ipairs(ACTIONS) do
                     if b.key == a.key and b.when() then
@@ -310,6 +337,7 @@ for _, a in ipairs(ACTIONS) do
 end
 
 RegisterKeyBind(Key[CFG.toggle_key] or Key.F9, function()
+    if retired then return end
     visible = not visible
     ExecuteInGameThread(function()
         if hud and valid(hud.widget) then
@@ -320,6 +348,7 @@ RegisterKeyBind(Key[CFG.toggle_key] or Key.F9, function()
 end)
 
 LoopAsync(UPDATE_MS, function()
+    if retired then return true end
     ExecuteInGameThread(function()
         local ok, err = pcall(update)
         if not ok then print("[PartyHud] " .. tostring(err) .. "\n") end
@@ -327,5 +356,5 @@ LoopAsync(UPDATE_MS, function()
     return false
 end)
 
-print(string.format("[PartyHud] loaded (%s), %s toggles the panel\n",
+print(string.format("[PartyHud] %d loaded (%s), %s toggles the panel\n", GEN,
     ok_cfg and "config.lua" or "defaults: " .. tostring(user_cfg), CFG.toggle_key))
