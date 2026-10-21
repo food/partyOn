@@ -3,7 +3,22 @@
 -- Effects and meshes are spawned locally in a row with a yellow name label; icons are shown
 -- on screen.
 
+-- Entries can be { path, tint = "User.X" }: the effect exposes that color and gets TINT.
+local TINT = { R = 0, G = 1, B = 0, A = 1 }
+
 local WORLD = {
+    { "/Game/FX/Particles/Buildings/Craftstations/FX_Flame_Furnace_T1", tint = "User.Color" },
+    { "/Game/FX/Particles/WeaponActions/Buff/Fire/FX_FlameHit", tint = "User.Color_01" },
+    { "/Game/FX/Particles/Consumables/Buff/Elixir/FX_Elixir", tint = "User.ElixirColor" },
+    { "/Game/FX/Particles/Environment/Weather/Lightning/FX_Lightning_Strikes", tint = "User.Lightning Color" },
+    "/Game/FX/Particles/Mobs/Boneman/FX_Necro_Legs_Light",
+    "/Game/FX/Particles/Bosses/HighLands/Israel/FX_IsraelChest_Necro",
+    "/Game/FX/Particles/Bosses/HighLands/Israel/Charge/FX_Charge_Necro",
+    "/Game/FX/Particles/Bosses/HighLands/Israel/FX_Necro_Zombie",
+    "/Game/FX/Particles/Mobs/Boneman/FX_Boneman_Totem_Activeted",
+    "/Game/FX/Particles/Mobs/Shaman/FX_single_Corruption",
+    "/Game/FX/Particles/Environment/Bioms/Swamp/FX_SwampCorraption_01",
+    "/Game/FX/Particles/Consumables/Heal/Potions/FX_Potion_GreatHeal",
     "/Game/FX/Particles/Environment/InteractiveObjects/PosthumousContainer/FX_PosthumousContainerLight",
     "/Game/FX/Particles/Environment/InteractiveObjects/PosthumousContainer/FX_PosthumousContainer",
     "/Game/FX/Particles/Environment/InteractiveObjects/PosthumousContainer/FX_PosthumousContainer_end_01",
@@ -119,14 +134,23 @@ local function label(pc, text, loc, yaw)
 end
 
 -- Effect (Niagara or Cascade) or mesh at loc; returns a short status for the label.
-local function show_world(pc, path, loc)
+local function show_world(pc, entry, loc)
+    local path = type(entry) == "table" and entry[1] or entry
     local obj = load(path)
     if not obj then return "not found" end
     local cls = obj:GetClass():GetFName():ToString()
     if cls == "NiagaraSystem" then
         local lib = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary")
         local c = lib:SpawnSystemAtLocation(pc, obj, loc, { Pitch = 0, Yaw = 0, Roll = 0 }, { X = 1, Y = 1, Z = 1 }, false, true, 0, false)
-        if valid(c) then spawned[#spawned + 1] = c end
+        if valid(c) then
+            spawned[#spawned + 1] = c
+            if type(entry) == "table" and entry.tint then
+                -- The user parameter store resolves the name with and without the "User." prefix.
+                for _, n in ipairs({ entry.tint, (entry.tint:gsub("^User%.", "")) }) do
+                    pcall(function() c:SetVariableLinearColor(FName(n), TINT) end)
+                end
+            end
+        end
     elseif cls == "ParticleSystem" then
         local statics = StaticFindObject("/Script/Engine.Default__GameplayStatics")
         local c = statics:SpawnEmitterAtLocation(pc, obj, loc, { Pitch = 0, Yaw = 0, Roll = 0 }, { X = 1, Y = 1, Z = 1 }, false, 0, false)
@@ -184,15 +208,17 @@ local function show(n)
     local pawn = pc.Pawn
     local here, fwd, right = pawn:K2_GetActorLocation(), pawn:GetActorForwardVector(), pawn:GetActorRightVector()
     local yaw = pawn:K2_GetActorRotation().Yaw + 180
-    for i, path in ipairs(p.items) do
+    for i, entry in ipairs(p.items) do
+        local path = type(entry) == "table" and entry[1] or entry
         local side = (i - (#p.items + 1) / 2) * SPACING
         local loc = {
             X = here.X + fwd.X * AHEAD + right.X * side,
             Y = here.Y + fwd.Y * AHEAD + right.Y * side,
             Z = here.Z - 80,
         }
-        local ok, status = pcall(show_world, pc, path, loc)
-        label(pc, short(path) .. (ok and "" or " (error)"), { X = loc.X, Y = loc.Y, Z = loc.Z + 260 }, yaw)
+        local ok, status = pcall(show_world, pc, entry, loc)
+        local tinted = type(entry) == "table" and entry.tint and " (gruen)" or ""
+        label(pc, short(path) .. tinted .. (ok and "" or " (error)"), { X = loc.X, Y = loc.Y, Z = loc.Z + 260 }, yaw)
         print(string.format("[PartyHudGallery]   %s -> %s\n", short(path), ok and tostring(status) or tostring(status)))
     end
 end
