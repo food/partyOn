@@ -2,7 +2,8 @@
 --   wp.rev classes          properties and functions of the revive/death classes (to the log)
 --   wp.rev info             property values of every revive/death component and its settings object
 --   wp.rev set <prop> <v>   set a number/enum property wherever it exists on those objects
---   wp.rev ghost [name]     move the player's pawn to where he last died, hide and freeze it
+--   wp.rev ghost [name] [h] move the player's pawn h cm (default 1500) above where he last died,
+--                           hide and freeze it
 --   wp.rev unghost [name] [back]  undo; "back" returns to where the pawn was before ghost
 -- Every UFunction call on R5ReviveComponent / R5DeathComponent and every ServerExecRPC message
 -- is logged with a timestamp.
@@ -300,8 +301,11 @@ function game.ghost(a)
     local name = a[2] or first_player()
     local pawn = player_pawn(name or "")
     if not pawn then return "no pawn for " .. tostring(name) end
-    local to = deaths[name]
-    if not to then return "no death location for " .. name end
+    local death = deaths[name]
+    if not death then return "no death location for " .. name end
+    -- Mobs keep attacking a ghost on the ground (tags, zero health and focus do not help, see
+    -- docs/plan.md), so the ghost hangs above the death spot where they cannot reach it.
+    local to = { X = death.X, Y = death.Y, Z = death.Z + (tonumber(a[3]) or 1500) }
     local here = pawn:K2_GetActorLocation()
     ghosts[name] = { X = here.X, Y = here.Y, Z = here.Z }
     local ok, err = pcall(function() pawn:K2_TeleportTo(to, pawn:K2_GetActorRotation()) end)
