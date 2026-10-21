@@ -1,7 +1,7 @@
 -- P3 spike: watch death and revive on the server and try the knobs a revive mod would need.
 --   wp.rev classes          properties and functions of the revive/death classes (to the log)
---   wp.rev info             property values of every R5ReviveComponent / R5DeathComponent
---   wp.rev set <prop> <v>   set a number/enum property on every R5ReviveComponent
+--   wp.rev info             property values of every revive/death component and its settings object
+--   wp.rev set <prop> <v>   set a number/enum property wherever it exists on those objects
 -- Every UFunction call on R5ReviveComponent / R5DeathComponent and every ServerExecRPC message
 -- is logged with a timestamp.
 local API = WindrosePlus.API
@@ -87,27 +87,53 @@ function ops.classes()
     return "written to partyrevive.log"
 end
 
+-- Objects a revive mod would touch: each component plus the settings objects it points to.
+local function targets()
+    local out = {}
+    for _, c in ipairs(FindAllOf("R5ReviveComponent") or {}) do
+        out[#out + 1] = c
+        local ok, s = pcall(function() return c.ReviveSettings end)
+        if ok and s and s:IsValid() then out[#out + 1] = s end
+    end
+    for _, c in ipairs(FindAllOf("R5DeathComponent") or {}) do
+        out[#out + 1] = c
+        local ok, s = pcall(function() return c.DeathParams end)
+        if ok and s and s:IsValid() then out[#out + 1] = s end
+    end
+    return out
+end
+
 function ops.info()
-    local n = 0
-    for _, cname in ipairs({ "R5ReviveComponent", "R5DeathComponent" }) do
-        for _, c in ipairs(FindAllOf(cname) or {}) do
-            log("%s", dump_object(c))
+    local seen, n = {}, 0
+    for _, o in ipairs(targets()) do
+        local name = o:GetFullName()
+        if not seen[name] then
+            seen[name] = true
+            log("%s", dump_object(o))
             n = n + 1
         end
     end
-    return n .. " component(s) written to partyrevive.log"
+    return n .. " object(s) written to partyrevive.log"
 end
 
+-- wp.rev set <prop> <number>: on every target object that has the property (settings objects
+-- are shared defaults, so a change there affects every player).
 function ops.set(a)
     local prop, v = a[2], tonumber(a[3])
     if not prop or not v then return "usage: wp.rev set <prop> <number>" end
-    local n = 0
-    for _, c in ipairs(FindAllOf("R5ReviveComponent") or {}) do
-        local ok, err = pcall(function() c[prop] = v end)
-        log("set %s.%s = %s -> %s %s", c:GetFullName(), prop, tostring(v), tostring(ok), tostring(err or ""))
-        n = n + 1
+    local done = {}
+    for _, o in ipairs(targets()) do
+        local name = o:GetFullName()
+        local has = pcall(function() return o[prop] end) and o[prop] ~= nil
+        if has and not done[name] then
+            done[name] = true
+            local ok, err = pcall(function() o[prop] = v end)
+            log("set %s.%s = %s -> %s %s", name, prop, tostring(v), tostring(ok), tostring(err or ""))
+        end
     end
-    return "set on " .. n .. " component(s)"
+    local n = 0
+    for _ in pairs(done) do n = n + 1 end
+    return "set on " .. n .. " object(s)"
 end
 
 -- Hook every UFunction of the two component classes; getters are skipped to keep the log readable.
