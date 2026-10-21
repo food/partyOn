@@ -7,8 +7,10 @@
 -- MarkerType (the user marker's icon index), R5MarkerModelSimple replicates its Icon texture.
 -- The texture is taken from the user marker class's own icon list, Icons[type].
 --
--- Line: A|U <tab> senderAccount <tab> markerId <tab> x <tab> y <tab> z <tab> type <tab> localized <tab> name
---       R   <tab> senderAccount <tab> markerId
+-- Line: A|U <tab> sender <tab> markerId <tab> x <tab> y <tab> z <tab> type <tab> localized <tab> name
+--       R   <tab> sender <tab> markerId
+-- sender is the AccountId of the player who set the marker. For a rule sent through another
+-- player's connection (the test bot) it is the PlayerId, so every real player gets a copy.
 local API = WindrosePlus.API
 local EVENTS = "Z:/home/steam/server-files/windrose_plus_data/markersync_events.txt"
 local USER = "/Game/UI/HUD/Navigation/MarkerModels/BP_MarkerModel_User"

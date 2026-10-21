@@ -109,9 +109,46 @@ static void learn_player(const char *id) {
     save_players();
 }
 
-// Reactor <-> PlayerId, learned from marker rules (the payload names the sender).
+// AccountId -> the account's own PlayerId: the first PlayerId seen on one of its connections.
+// A connection can also carry rules for another PlayerId (the test bot sends through a
+// player's connection), so the first one is kept for good and persisted to file.
+static struct { char acct[ID_LEN]; char pid[ID_LEN]; } owners[MAX_PLAYERS];
+static int nowners;
+
+static void save_owners(void) {
+    FILE *f = fopen(DATA_DIR "markersync_accounts.txt", "w");
+    if (!f) return;
+    for (int i = 0; i < nowners; i++) fprintf(f, "%.32s %.32s\n", owners[i].acct, owners[i].pid);
+    fclose(f);
+}
+
+static void load_owners(void) {
+    FILE *f = fopen(DATA_DIR "markersync_accounts.txt", "r");
+    char line[128];
+    if (!f) return;
+    while (nowners < MAX_PLAYERS && fgets(line, sizeof line, f))
+        if (strlen(line) >= 2 * ID_LEN + 1 && is_id(line) && is_id(line + ID_LEN + 1)) {
+            memcpy(owners[nowners].acct, line, ID_LEN);
+            memcpy(owners[nowners++].pid, line + ID_LEN + 1, ID_LEN);
+        }
+    fclose(f);
+}
+
+// Own PlayerId of an account; `pid` becomes it if the account is new.
+static const char *owner_of(const char *acct, const char *pid) {
+    for (int i = 0; i < nowners; i++)
+        if (!memcmp(owners[i].acct, acct, ID_LEN)) return owners[i].pid;
+    if (nowners == MAX_PLAYERS) return pid;
+    memcpy(owners[nowners].acct, acct, ID_LEN);
+    memcpy(owners[nowners].pid, pid, ID_LEN);
+    fprintf(logf, "account %.32s plays %.32s\n", acct, pid);
+    save_owners();
+    return owners[nowners++].pid;
+}
+
+// Reactor <-> PlayerId, learned from marker rules of the connection's own player.
 // A reactor is only used while it is still in the session's reactor list.
-static struct { void *reactor; char pid[ID_LEN]; char acct[ID_LEN + 1]; } links[MAX_PLAYERS];
+static struct { void *reactor; char pid[ID_LEN]; } links[MAX_PLAYERS];
 
 static void link_reactor(void *r, const char *pid) {
     int free_slot = -1;
@@ -120,41 +157,47 @@ static void link_reactor(void *r, const char *pid) {
         if (!links[i].reactor && free_slot < 0) free_slot = i;
     }
     if (free_slot < 0) free_slot = 0;  // ponytail: full table overwrites slot 0, 64 players is far beyond max
-    if (links[free_slot].reactor != r) links[free_slot].acct[0] = 0;
     links[free_slot].reactor = r;
     memcpy(links[free_slot].pid, pid, ID_LEN);
 }
 
-// AccountId of a reactor, cached per link. Calls the game's own getter.
+// AccountId of a reactor, cached per reactor; hook_asr drops the entry when a new connection
+// reuses the address. Calls the game's own getter.
+static struct { void *reactor; char acct[ID_LEN + 1]; } accounts[MAX_PLAYERS];
+
 static const char *account_of(void *r) {
+    int slot = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (links[i].reactor != r) continue;
-        if (!links[i].acct[0]) {
-            // ponytail: the game allocates the id string, we never free it (once per connection)
-            static char out[MAX_PLAYERS][0x80] __attribute__((aligned(16)));  // object size unknown, room to spare
-            memset(out[i], 0, 0x80);
-            get_account_id(r, out[i]);
-            // Result is an R5 id object: vtable at +0, char data at +0x8, length at +0x18.
-            char *d = *(char **)(out[i] + 0x8);
-            size_t len = *(size_t *)(out[i] + 0x18);
-            if (len == ID_LEN && readable(d, ID_LEN) && is_id(d)) { memcpy(links[i].acct, d, ID_LEN); links[i].acct[ID_LEN] = 0; }
-            else {
-                fprintf(logf, "  account lookup failed, out:");
-                for (int k = 0; k < 0x20; k++) fprintf(logf, "%02x", (uint8_t)out[i][k]);
-                fprintf(logf, " len=%zu\n", d ? len : (size_t)-1);
-            }
-        }
-        return links[i].acct[0] ? links[i].acct : NULL;
+        if (accounts[i].reactor == r) return accounts[i].acct;
+        if (!accounts[i].reactor && slot < 0) slot = i;
     }
+    if (slot < 0) slot = 0;  // ponytail: full table overwrites slot 0, it is looked up again when needed
+    // ponytail: the game allocates the id string, we never free it (once per connection)
+    static char out[MAX_PLAYERS][0x80] __attribute__((aligned(16)));  // object size unknown, room to spare
+    memset(out[slot], 0, 0x80);
+    get_account_id(r, out[slot]);
+    // Result is an R5 id object: vtable at +0, char data at +0x8, length at +0x18.
+    char *d = *(char **)(out[slot] + 0x8);
+    size_t len = *(size_t *)(out[slot] + 0x18);
+    if (len == ID_LEN && readable(d, ID_LEN) && is_id(d)) {
+        accounts[slot].reactor = r;
+        memcpy(accounts[slot].acct, d, ID_LEN);
+        accounts[slot].acct[ID_LEN] = 0;
+        return accounts[slot].acct;
+    }
+    fprintf(logf, "  account lookup failed, out:");
+    for (int k = 0; k < 0x20; k++) fprintf(logf, "%02x", (uint8_t)out[slot][k]);
+    fprintf(logf, " len=%zu\n", d ? len : (size_t)-1);
     return NULL;
 }
 
 // Payload after the three ids: X, Y, Z (double), Type (int32), [u32 len][name], [u32 len][namespace].
-static void write_event(char op, const char *acct, const char *p, size_t plen) {
+// `sender` is 32 chars: the AccountId, or the PlayerId for a rule sent on someone's behalf.
+static void write_event(char op, const char *sender, const char *p, size_t plen) {
     const char *mid = p + 2 * (4 + ID_LEN) + 4;
     size_t rest = plen - 3 * (4 + ID_LEN);  // bytes after the three ids
     if (op == 'R' || rest < 32) {
-        fprintf(evf, "R\t%s\t%.32s\n", acct, mid);
+        fprintf(evf, "R\t%.32s\t%.32s\n", sender, mid);
     } else {
         const char *q = p + 3 * (4 + ID_LEN);
         double x, y, z; int32_t type; uint32_t nl, nsl = 0;
@@ -165,7 +208,7 @@ static void write_event(char op, const char *acct, const char *p, size_t plen) {
         char name[256];
         memcpy(name, q + 32, nl); name[nl] = 0;
         for (char *c = name; *c; c++) if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
-        fprintf(evf, "%c\t%s\t%.32s\t%.1f\t%.1f\t%.1f\t%d\t%d\t%s\n", op, acct, mid, x, y, z, type, nsl > 0, name);
+        fprintf(evf, "%c\t%.32s\t%.32s\t%.1f\t%.1f\t%.1f\t%d\t%d\t%s\n", op, sender, mid, x, y, z, type, nsl > 0, name);
     }
     fflush(evf);
 }
@@ -242,9 +285,14 @@ static void *hook_rrs_inner(void *reactor, void *request, void *a3, void *a4) {
     EnterCriticalSection(&lock);
     fprintf(logf, "%.*s from %.32s marker %.32s\n", (int)nlen, name, buf + 4, buf + 4 + 2 * (4 + ID_LEN));
     learn_player(buf + 4);
-    link_reactor(reactor, buf + 4);
     const char *acct = account_of(reactor);
-    if (acct && evf) write_event(op, acct, buf, plen);
+    // A rule for another player than the connection's own (the test bot) must not relink the
+    // connection, and its live copies go to everyone, so the event names that PlayerId.
+    const char *own = acct ? owner_of(acct, buf + 4) : buf + 4;
+    int foreign = memcmp(own, buf + 4, ID_LEN) != 0;
+    if (foreign) fprintf(logf, "  sent through the connection of %.32s\n", own);
+    else link_reactor(reactor, buf + 4);
+    if (acct && evf) write_event(op, foreign ? buf + 4 : acct, buf, plen);
 
     // Re-fetch: only replay if the strings are still intact after the original call.
     size_t plen2 = 0, rlen2 = 0;
@@ -311,7 +359,10 @@ static char hook_update_do(void *rule) {
 static void *hook_asr(void *s, void *reactor_sp, void *a3, void *a4) {
     session = s;
     EnterCriticalSection(&lock);
-    fprintf(logf, "AddServerReactor session=%p reactor=%p\n", s, deref(reactor_sp, 0));
+    void *r = deref(reactor_sp, 0);
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        if (accounts[i].reactor == r) accounts[i].reactor = NULL;
+    fprintf(logf, "AddServerReactor session=%p reactor=%p\n", s, r);
     fflush(logf);
     LeaveCriticalSection(&lock);
     return orig_asr(s, reactor_sp, a3, a4);
@@ -366,6 +417,7 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     logf = fopen(DATA_DIR "markersync.log", "a");
     if (!logf) return TRUE;
     load_players();
+    load_owners();
     char *base = (char *)GetModuleHandleA(NULL);
     if (memcmp(base + RVA_RULE_REQUEST_SERVER, SIG_RULE_REQUEST_SERVER, 32) ||
         memcmp(base + RVA_ADD_SERVER_REACTOR, SIG_ADD_SERVER_REACTOR, 32) ||

@@ -40,6 +40,15 @@ from marker requests. Known PlayerIds persist in
 `windrose_plus_data/markersync_players.txt`, the log goes to
 `windrose_plus_data/markersync.log`.
 
+A connection can carry rules for another player: the test bot
+(`windrose-testbot`) sends its marker rules through a connected player's
+connection. So each account's own PlayerId is the first one seen on its
+connections, persisted in `windrose_plus_data/markersync_accounts.txt`
+(`AccountId PlayerId` per line). Rules for any other PlayerId do not relink the
+connection, and their events name that PlayerId as sender, so every real player
+gets the live copy. An account whose first marker rule comes from the bot is
+learned wrong; add the line by hand before using the bot with a new account.
+
 Hook and call addresses are fixed RVAs for game build `0.10.0.9.32`. Before hooking, the
 DLL compares 32 bytes of each target. After a game update it logs
 `markersync DISABLED` and does nothing, instead of crashing the server. The
