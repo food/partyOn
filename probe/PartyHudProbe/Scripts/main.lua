@@ -1,12 +1,5 @@
--- P0 probe: Ctrl+F7 logs health, owner and combat tags of every attribute set the client knows.
--- Output goes to UE4SS.log and Mods/PartyHudProbe/probe.txt.
-
-local OUT = "Mods/PartyHudProbe/probe.txt"
-
-local function name_of(obj)
-    local ok, s = pcall(function() return obj:GetFullName() end)
-    return ok and s or tostring(obj)
-end
+-- P0 probe: F7 logs health, distance and gameplay tags of every player in GameState.PlayerArray.
+-- Output goes to UE4SS.log. The player attribute set lives on the PlayerState (first probe, 21.10.2026).
 
 local function fstr(v)
     local ok, s = pcall(function() return v:ToString() end)
@@ -20,85 +13,74 @@ local function attr(set, field)
     return nil
 end
 
-local function local_pawn_location()
-    local pc = FindFirstOf("PlayerController")
-    if not pc or not pc:IsValid() or not pc.Pawn:IsValid() then return nil end
-    return pc.Pawn:K2_GetActorLocation()
-end
-
--- Player name and distance in metres for the actor that owns an ability system component.
-local function describe_owner(asc, here)
-    local ok, owner = pcall(function() return asc:GetOwner() end)
-    if not ok or not owner or not owner:IsValid() then return "owner ?" end
-    local ps, pawn = nil, nil
-    if owner:IsA("/Script/Engine.PlayerState") then
-        ps = owner
-        pcall(function() pawn = owner:GetPawn() end)
-    elseif owner:IsA("/Script/Engine.Pawn") then
-        pawn = owner
-        pcall(function() ps = owner.PlayerState end)
-    end
-    local who = "npc"
-    if ps and ps:IsValid() then who = fstr(ps.PlayerNamePrivate) end
-    local dist = "-"
-    if here and pawn and pawn:IsValid() then
-        local p = pawn:K2_GetActorLocation()
-        local dx, dy, dz = p.X - here.X, p.Y - here.Y, p.Z - here.Z
-        dist = string.format("%.0fm", math.sqrt(dx * dx + dy * dy + dz * dz) / 100)
-    end
-    return string.format("%s owner=%s dist=%s", who, owner:GetClass():GetFName():ToString(), dist)
-end
-
-local function combat_tags(asc)
-    local tags = {}
-    for _, fn in ipairs({ "GetOwnedGameplayTags", "K2_GetOwnedGameplayTags" }) do
-        local ok, container = pcall(function() return asc[fn](asc) end)
-        if ok and container then
-            pcall(function()
-                container.GameplayTags:ForEach(function(_, tag)
-                    local t = tag:get().TagName:ToString()
-                    if t:lower():find("combat", 1, true) then tags[#tags + 1] = t end
-                end)
-            end)
-            return #tags > 0 and table.concat(tags, ",") or "none", fn
+local function attribute_set_of(ps)
+    local prefix = ps:GetFullName():match("^%S+ (.+)$")
+    for _, set in ipairs(FindAllOf("R5AttributeSet") or {}) do
+        if set:GetOuter():IsValid() and set:GetOuter():GetFullName():match("^%S+ (.+)$") == prefix then
+            return set
         end
+    end
+    return nil
+end
+
+local function asc_of(ps)
+    local ok, asc = pcall(function() return ps.AbilitySystemComponent end)
+    if ok and asc and asc:IsValid() then return asc, "property" end
+    for _, c in ipairs(FindAllOf("AbilitySystemComponent") or {}) do
+        local ok2, owner = pcall(function() return c:GetOwner() end)
+        if ok2 and owner and owner:IsValid() and owner:GetFullName() == ps:GetFullName() then
+            return c, "search"
+        end
+    end
+    return nil, "none"
+end
+
+local function owned_tags(asc)
+    for _, fn in ipairs({ "K2_GetOwnedGameplayTags", "GetOwnedGameplayTags" }) do
+        local tags = {}
+        local ok = pcall(function()
+            asc[fn](asc).GameplayTags:ForEach(function(_, tag)
+                tags[#tags + 1] = tag:get().TagName:ToString()
+            end)
+        end)
+        if ok then return table.concat(tags, ","), fn end
     end
     return "n/a", "-"
 end
 
 local function probe()
     local lines = { os.date("== %Y-%m-%d %H:%M:%S") }
-    local here = local_pawn_location()
-    local sets = FindAllOf("AttributeSet") or {}
-    for _, set in ipairs(sets) do
-        local hp, max = attr(set, "Health"), attr(set, "MaxHealth")
-        if hp then
-            local asc = set:GetOuter()
-            local tags, via = combat_tags(asc)
-            lines[#lines + 1] = string.format("%s hp=%.1f/%s temp=%s | %s | combat=%s (%s) | %s",
-                set:GetClass():GetFName():ToString(), hp, max and string.format("%.1f", max) or "?",
-                tostring(attr(set, "TemporalHealth")), describe_owner(asc, here), tags, via, name_of(set))
-        end
-    end
+    local pc = FindFirstOf("PlayerController")
+    local here = pc and pc:IsValid() and pc.Pawn:IsValid() and pc.Pawn:K2_GetActorLocation() or nil
     local gs = FindFirstOf("GameStateBase")
-    if gs and gs:IsValid() then
-        gs.PlayerArray:ForEach(function(_, ps)
-            ps = ps:get()
-            lines[#lines + 1] = "player " .. fstr(ps.PlayerNamePrivate) .. " pawn=" .. tostring(ps:GetPawn():IsValid())
-        end)
-    end
-    lines[#lines + 1] = string.format("%d attribute sets scanned", #sets)
-    local text = table.concat(lines, "\n")
-    print("[PartyHudProbe]\n" .. text .. "\n")
-    local f = io.open(OUT, "a")
-    if f then f:write(text, "\n"); f:close() end
+    if not gs or not gs:IsValid() then return print("[PartyHudProbe] no GameState\n") end
+    gs.PlayerArray:ForEach(function(_, ref)
+        local ps = ref:get()
+        local set = attribute_set_of(ps)
+        local hp = set and attr(set, "Health")
+        local max = set and attr(set, "MaxHealth")
+        local dist = "-"
+        local pawn = ps:GetPawn()
+        if here and pawn:IsValid() then
+            local p = pawn:K2_GetActorLocation()
+            local dx, dy, dz = p.X - here.X, p.Y - here.Y, p.Z - here.Z
+            dist = string.format("%.0fm", math.sqrt(dx * dx + dy * dy + dz * dz) / 100)
+        end
+        local asc, found = asc_of(ps)
+        local tags, via = "n/a", "-"
+        if asc then tags, via = owned_tags(asc) end
+        lines[#lines + 1] = string.format("%s hp=%s/%s dist=%s asc=%s(%s) tags[%s]=%s",
+            fstr(ps.PlayerNamePrivate), tostring(hp), tostring(max), dist,
+            asc and asc:GetClass():GetFName():ToString() or "-", found, via, tags)
+    end)
+    print("[PartyHudProbe]\n" .. table.concat(lines, "\n") .. "\n")
 end
 
-RegisterKeyBind(Key.F7, { ModifierKey.CONTROL }, function()
+RegisterKeyBind(Key.F7, function()
     ExecuteInGameThread(function()
         local ok, err = pcall(probe)
         if not ok then print("[PartyHudProbe] error: " .. tostring(err) .. "\n") end
     end)
 end)
 
-print("[PartyHudProbe] loaded, Ctrl+F7 to probe\n")
+print("[PartyHudProbe] loaded, F7 to probe\n")

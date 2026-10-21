@@ -18,7 +18,7 @@ Uninstall: delete `dwmapi.dll` and `ue4ss\`.
 ## Layout
 
 - `docs/plan.md` what the game replicates, how the HUD would be built, phases
-- `probe/PartyHudProbe` P0 UE4SS Lua mod: Ctrl+F7 logs health, owner, distance and combat
-  tags of every attribute set the client knows (`UE4SS.log` and `probe.txt` in the mod folder)
+- `probe/PartyHudProbe` P0 UE4SS Lua mod: F7 logs health, distance and gameplay
+  tags of every player (to `UE4SS.log`)
 - `tools/refl.py` scans the server binary for reflected properties and their replication
   flags (runs in markersync's `windrose-dev` image, binary mounted at `/bin64`)
