@@ -2,6 +2,8 @@
 --   wp.rev classes          properties and functions of the revive/death classes (to the log)
 --   wp.rev info             property values of every revive/death component and its settings object
 --   wp.rev set <prop> <v>   set a number/enum property wherever it exists on those objects
+--   wp.rev ghost [name]     move the player's pawn to where he last died, hide and freeze it
+--   wp.rev unghost [name] [back]  undo; "back" returns to where the pawn was before ghost
 -- Every UFunction call on R5ReviveComponent / R5DeathComponent and every ServerExecRPC message
 -- is logged with a timestamp.
 local API = WindrosePlus.API
@@ -136,6 +138,103 @@ function ops.set(a)
     return "set on " .. n .. " object(s)"
 end
 
+-- Ghost test: the game's revive stays untouched, the new pawn is moved back to where the old
+-- one died and made hidden, frozen and immune; unghost undoes it, optionally moving it back.
+local deaths = {}   -- [player name] = death location
+local ghosts = {}   -- [player name] = respawn location
+
+local function player_pawn(name)
+    for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+        local ok, n = pcall(function() return pc.PlayerState.PlayerNamePrivate:ToString() end)
+        if ok and n == name and pc.Pawn:IsValid() then return pc.Pawn, pc end
+    end
+end
+
+local function first_player()
+    for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
+        local ok, n = pcall(function() return pc.PlayerState.PlayerNamePrivate:ToString() end)
+        if ok then return n end
+    end
+end
+
+local function set_ghost(pawn, on)
+    local steps = {
+        { "hidden", function() pawn:SetActorHiddenInGame(on) end },
+        { "collision", function() pawn:SetActorEnableCollision(not on) end },
+        { "damage", function() pawn:SetCanBeDamaged(not on) end },
+        { "movement", function()
+            if on then pawn.CharacterMovement:DisableMovement() else pawn.CharacterMovement:SetMovementMode(1, 0) end
+        end },
+    }
+    local out = {}
+    for _, s in ipairs(steps) do
+        local ok, err = pcall(s[2])
+        out[#out + 1] = s[1] .. "=" .. (ok and "ok" or tostring(err))
+    end
+    return table.concat(out, " ")
+end
+
+-- Pawn changes must run on the game thread; like windrose-testbot, the work is queued and run
+-- from client RPC hooks (Windrose+ has HookEngineTick=0).
+local queue = {}
+local game = {}
+
+local function tick()
+    if #queue == 0 then return end
+    local job = table.remove(queue, 1)
+    local ok, res = pcall(game[job[1]], job)
+    log("run %s -> %s", table.concat(job, " "), ok and tostring(res) or ("failed: " .. tostring(res)))
+end
+RegisterHook("/Script/Engine.Character:ServerMovePacked", tick)
+RegisterHook("/Script/Engine.PlayerController:ServerUpdateCamera", tick)
+
+function ops.ghost(a)
+    queue[#queue + 1] = a
+    return "queued ghost (runs when a player moves)"
+end
+
+function ops.unghost(a)
+    queue[#queue + 1] = a
+    return "queued unghost (runs when a player moves)"
+end
+
+function game.ghost(a)
+    local name = a[2] or first_player()
+    local pawn = player_pawn(name or "")
+    if not pawn then return "no pawn for " .. tostring(name) end
+    local to = deaths[name]
+    if not to then return "no death location for " .. name end
+    local here = pawn:K2_GetActorLocation()
+    ghosts[name] = { X = here.X, Y = here.Y, Z = here.Z }
+    local ok, err = pcall(function() pawn:K2_TeleportTo(to, pawn:K2_GetActorRotation()) end)
+    local res = set_ghost(pawn, true)
+    log("ghost %s: teleport %s %s, %s", name, tostring(ok), tostring(err or ""), res)
+    return "ghost " .. name .. ": teleport=" .. tostring(ok) .. " " .. res
+end
+
+function game.unghost(a)
+    local name = a[2] or first_player()
+    local pawn = player_pawn(name or "")
+    if not pawn then return "no pawn for " .. tostring(name) end
+    local res = set_ghost(pawn, false)
+    if a[3] == "back" and ghosts[name] then
+        pcall(function() pawn:K2_TeleportTo(ghosts[name], pawn:K2_GetActorRotation()) end)
+    end
+    ghosts[name] = nil
+    log("unghost %s %s: %s", name, a[3] or "", res)
+    return "unghost " .. name .. ": " .. res
+end
+
+RegisterHook("/Script/R5.R5ReviveComponent:OnPawnDead", function(self, actor)
+    pcall(function()
+        local a = actor:get()
+        local name = self:get():GetOwner().PlayerNamePrivate:ToString()
+        local l = a:K2_GetActorLocation()
+        deaths[name] = { X = l.X, Y = l.Y, Z = l.Z }
+        log("death %s at %.0f %.0f %.0f", name, l.X, l.Y, l.Z)
+    end)
+end)
+
 -- Hook every UFunction of the two component classes; getters are skipped to keep the log readable.
 for _, path in ipairs({ "/Script/R5.R5ReviveComponent", "/Script/R5.R5DeathComponent" }) do
     local cls = StaticFindObject(path)
@@ -165,7 +264,7 @@ end)
 
 API.registerCommand("wp.rev", function(args)
     local op = ops[args[1] or ""]
-    if not op then return "usage: wp.rev classes|info|set <prop> <number>" end
+    if not op then return "usage: wp.rev classes|info|set <prop> <number>|ghost [name]|unghost [name] [back]" end
     local ok, res = pcall(op, args)
     return ok and tostring(res) or ("failed: " .. tostring(res))
 end, "Revive spike", "wp.rev classes|info|set")
