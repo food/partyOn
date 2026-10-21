@@ -264,8 +264,9 @@ local function load_beam_assets()
     if beam_assets ~= nil then return beam_assets or nil end
     local mesh_path = "/Engine/BasicShapes/Cylinder.Cylinder"
     local mat_path = "/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"
-    pcall(function() LoadAsset("/Engine/BasicShapes/Cylinder") end)
-    pcall(function() LoadAsset("/Engine/BasicShapes/BasicShapeMaterial") end)
+    -- LoadAsset needs the full object path; the package path alone loaded nothing.
+    pcall(function() LoadAsset(mesh_path) end)
+    pcall(function() LoadAsset(mat_path) end)
     local mesh, mat = StaticFindObject(mesh_path), StaticFindObject(mat_path)
     if not valid(mesh) then
         beam_assets = false

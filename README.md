@@ -8,7 +8,8 @@ panel.
 Revive (needs the server mod `server/partyrevive`): after death the player picks F5 respawn
 (as usual) or F6 wait. A waiting player hangs as an invisible ghost above his death spot until
 a teammate within 5 m presses F7, which puts him back on his feet there; F5 cancels and
-respawns at the save point.
+respawns at the save point. A red pillar rises from every ghost's death spot so teammates find
+it.
 
 Settings (position, scale, combat seconds, revive keys, toggle key) are in
 `mod/PartyHud/Scripts/config.lua`; Ctrl+R in game reloads them when UE4SS hot reload is on.
