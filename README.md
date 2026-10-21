@@ -1,9 +1,14 @@
 # windrose-partyhud
 
 Client-side Windrose mod that shows the other players' health in your own HUD: one row per
-player with name, value and health bar. F9 hides and shows the panel.
+player with name, value and health bar, sorted by name. A row turns orange with "Kampf" for a
+few seconds after the player loses health, and grey with "tot" at zero. F9 hides and shows the
+panel.
 
-Status: P1 works (minimal HUD). Combat marker and settings come next, see `docs/plan.md`.
+Settings (position, scale, combat seconds, toggle key) are in
+`mod/PartyHud/Scripts/config.lua`; Ctrl+R in game reloads them when UE4SS hot reload is on.
+
+Status: P2 done, see `docs/plan.md`.
 
 ## Install
 
