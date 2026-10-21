@@ -17,11 +17,11 @@ restart_and_wait() {  # waits for the DLL to write its startup line
   for i in $(seq 1 60); do [ "$(wc -l < $LOG)" -gt "$n" ] && return; sleep 5; done
   echo "timeout waiting for markersync log"
 }
-cp dev/guard_bad.dll server-files/windrose_plus_mods/markersync/markersync.dll
+cp dev/guard_bad.dll server-files/windrose_plus_mods/partyon/markersync.dll
 restart_and_wait
 echo "bad build:  $(tail -1 server-files/windrose_plus_data/markersync.log)"
 
-cp dev/markersync.dll server-files/windrose_plus_mods/markersync/markersync.dll
+cp dev/markersync.dll server-files/windrose_plus_mods/partyon/markersync.dll
 rm -f dev/guard_bad.c dev/guard_bad.dll dev/guard_build.sh
 restart_and_wait
 echo "good build: $(tail -1 server-files/windrose_plus_data/markersync.log)"

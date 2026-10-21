@@ -1,40 +1,60 @@
-# windrose-partyhud
+# Windrose Party On
 
-Client-side Windrose mod that shows the other players' health in your own HUD: one row per
-player with name, value and health bar, sorted by name. A row turns orange with "Kampf" for a
-few seconds after the player loses health, and grey with "tot" at zero. F9 hides and shows the
-panel.
+Co-op add-on for Windrose dedicated servers, in two parts:
 
-Revive (needs the server mod `server/partyrevive`): after death the player picks F5 respawn
-(as usual) or F6 wait. A waiting player hangs as an invisible ghost above his death spot until
-a teammate within 5 m presses F7, which puts him back on his feet there; F5 cancels and
-respawns at the save point. A signal fire burns on every ghost's death spot so teammates find
-it (or a red pillar, see `config.lua`).
+- **Server** (`server/partyon`, a Windrose+ mod)
+  - Shared map markers: a marker one player adds, renames or removes shows up for everyone,
+    live and in every player's save (`docs/markersync.md`).
+  - Revive: after death a player can wait as a ghost instead of respawning, and a teammate
+    brings him back where he died.
+- **Client** (`client/PartyOn`, a UE4SS Lua mod, every player installs it)
+  - Party panel: one row per other player with name, health and bar, sorted by name. A row
+    turns orange with "Kampf" for a few seconds after the player loses health, grey with
+    "tot" at zero, light blue with "wartet auf Hilfe" for a ghost. F9 hides it.
+  - Revive prompts: after death F5 respawns as usual, F6 waits as a ghost. A ghost hangs
+    invisible above his death spot (mobs give up there) and can cancel with F5. A teammate
+    within 5 m of the spot presses F7 to revive him. A signal fire burns on every ghost's
+    death spot (or a red pillar, see `config.lua`).
 
-Settings (position, scale, combat seconds, revive keys, toggle key) are in
-`mod/PartyHud/Scripts/config.lua`; Ctrl+R in game reloads them when UE4SS hot reload is on.
-
-Status: P2 done, see `docs/plan.md`.
+Settings (position, scale, combat seconds, keys, marker) are in
+`client/PartyOn/Scripts/config.lua`.
 
 ## Install
+
+Server (Windrose+ installed):
+
+1. Build `markersync.dll` (see `docs/markersync.md`) and put it into `server/partyon/`.
+2. Copy `server/partyon` to `server-files/windrose_plus_mods/partyon/` (strip CRLF from the
+   Lua files) and add `"partyon"` to `windrose_plus_mods/mods_registry.json`.
+3. Restart the server. Never hot-reload the Lua: the hooks crash the server.
+
+Client, per player:
 
 1. UE4SS experimental (tested `UE4SS_v3.0.1-1181-g83330635.zip` from UE4SS-RE/RE-UE4SS
    `experimental-latest`, not the zDEV one): unzip into `Windrose\R5\Binaries\Win64\`.
 2. In `ue4ss\UE4SS-settings.ini` set `MajorVersion = 5`, `MinorVersion = 6`.
-3. Copy `mod/PartyHud` to `ue4ss\Mods\` and add `PartyHud : 1` to `Mods\mods.txt` (above the
-   `Keybinds` line). Same for `probe/PartyHudProbe` if you want the probe.
+3. Copy `client/PartyOn` to `ue4ss\Mods\` and add `PartyOn : 1` to `Mods\mods.txt` (above the
+   `Keybinds` line).
 
-Every player who wants the panel installs it. The panel alone needs nothing on the server;
-revive needs `server/partyrevive` as a Windrose+ mod (copy to `windrose_plus_mods/partyrevive/`,
-add `"partyrevive"` to `mods_registry.json`, restart).
+Uninstall on the client: delete `dwmapi.dll` and `ue4ss\`.
 
-Uninstall: delete `dwmapi.dll` and `ue4ss\`.
+The panel works without the server part; markers and revive need it.
 
 ## Layout
 
-- `mod/PartyHud` the HUD, UE4SS Lua with UMG widgets built at runtime
-- `docs/plan.md` what the game replicates, how the HUD works, phases
-- `probe/PartyHudProbe` P0 probe: F7 logs health, distance and combat tags of every player,
-  F8 toggles a watcher that logs every change (to `UE4SS.log`)
-- `tools/refl.py` scans the server binary for reflected properties and their replication
-  flags (runs in markersync's `windrose-dev` image, binary mounted at `/bin64`)
+- `server/partyon` Windrose+ mod: `init.lua` loads `markersync.dll`, `live.lua` (live markers)
+  and `revive.lua` (ghosts and revive, talks to clients through
+  `PlayerController:ServerExecRPC("partyon ...")`)
+- `client/PartyOn` UE4SS mod, UMG widgets built at runtime, no cooked assets
+- `dll` markersync hook DLL (mingw + MinHook), build container
+- `docs/plan.md` research and phases of the panel and revive; `docs/markersync.md`;
+  `docs/visual-candidates.md` game assets that could mark a death spot
+- `probe` client dev mods: `PartyHudProbe` (F7/F8 health and tag logging),
+  `PartyHudGallery` (F10-F12 asset preview); both off by default, they share keys with the HUD
+- `tools` reverse engineering and test helpers: `refl.py`, `funcs.py`, `xref.py`,
+  `disasm.py` (server binary), `utoc_list.py` (list and extract pak files), `probe.lua` and
+  `revive_spike.lua` (server RCON probes), `dbtool`, `patch_backup.py`, `wp.sh`, `bottest.sh`
+- `testserver` docker compose for the test server
+
+Game build 0.10.0.9.32. History of the two former repos (windrose-markersync,
+windrose-partyhud) is kept in this one.

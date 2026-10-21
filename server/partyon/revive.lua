@@ -1,4 +1,4 @@
--- partyrevive: a dead player can wait as a ghost for a teammate instead of respawning.
+-- Party On revive: a dead player can wait as a ghost for a teammate instead of respawning.
 --
 -- The game's own revive is left alone: the player dies and gets a new pawn at his save point
 -- 5 s later. If he chose to wait, that new pawn is moved back above his death spot and made a
@@ -7,7 +7,7 @@
 -- it down there and the player plays on; cancel sends it back to the save point.
 --
 -- Clients talk to this mod through PlayerController:ServerExecRPC (does nothing else in
--- shipping builds): "partyhud wait|respawn|cancel|help". Clients see a ghost by its replicated
+-- shipping builds): "partyon wait|respawn|cancel|help". Clients see a ghost by its replicated
 -- bHidden flag. Pawn changes run queued on the game thread from client RPC hooks, because
 -- Windrose+ runs with HookEngineTick=0.
 --
@@ -194,7 +194,7 @@ RegisterHook("/Script/Engine.PlayerController:ServerExecRPC", function(self, msg
         return msg:get():ToString(), name_of(self:get().PlayerState)
     end)
     if not ok or not name then return end
-    local cmd = text:match("^partyhud (%a+)")
+    local cmd = text:match("^partyon (%a+)")
     if not cmd then return end
     log("message %s from %s", cmd, name)
     local s = state(name)
@@ -246,4 +246,4 @@ API.registerCommand("wp.rev", function(args)
     return op(table.concat(args, " ", 2))
 end, "Party revive", "wp.rev status|ghost <name>|free <name>")
 
-log("partyrevive loaded")
+log("revive loaded")

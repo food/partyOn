@@ -1,9 +1,9 @@
-# windrose-markersync
+# Shared map markers (markersync)
 
-Server-side mod for the Windrose dedicated server: map markers a player adds,
+Part of Windrose Party On, server side: map markers a player adds,
 renames or removes are applied to every player in the world.
 
-Status 0.2.0: markers show up live for every online player and are kept in
+Status: markers show up live for every online player and are kept in
 every player's save, so they are still there after a relog.
 
 ## How it works
@@ -25,7 +25,7 @@ The DLL also calls the game's own getter for a connection's AccountId
 `PlayerInWorld` record. A client ignores the resulting diff on screen, though,
 so this alone only shows after the next login.
 
-**Live (Lua, `mod/live.lua`):** for each marker action the DLL appends a line to
+**Live (Lua, `server/partyon/live.lua`):** for each marker action the DLL appends a line to
 `windrose_plus_data/markersync_events.txt` (action, sender AccountId, MarkerId,
 position, icon, far-away flag, name). The Lua side reads it every 300 ms. For every other
 online player it creates, moves, renames or destroys a marker model with
@@ -73,7 +73,7 @@ getter is the call right before the `AccountId {}` log in `AddServerReactor`).
 
 ```
 ~/space/windrose/
-  docker-compose.yml, .env    <- server/ (env.example as template)
+  docker-compose.yml, .env    <- testserver/ (env.example as template)
   server-files/               <- game + Windrose+, created by the image
   dev/                        <- dll/ + tools/ (build container mounts ../server-files)
 ```
@@ -84,12 +84,11 @@ getter is the call right before the `AccountId {}` log in `AddServerReactor`).
 cd ~/space/windrose/dev
 docker compose build
 docker compose run --rm -T windev sh build.sh
-cp markersync.dll ../server-files/windrose_plus_mods/markersync/
+cp markersync.dll ../server-files/windrose_plus_mods/partyon/
 ```
 
-Copy `mod/` to `server-files/windrose_plus_mods/markersync/` and list the mod in
-`windrose_plus_mods/mods_registry.json` (`["markersync"]`). Windrose+ only loads
-registered mods. A server restart is needed to load a new DLL.
+The DLL ships inside the `partyon` mod, see the README for the install. A server restart is
+needed to load a new DLL.
 
 `tools/probe.lua` has the reverse-engineering RCON commands (`wp.uprobe`,
 `wp.rpcs`, `wp.mktest`, ...); it is not part of the deployed mod.

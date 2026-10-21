@@ -1,13 +1,13 @@
--- PartyHud: a panel with name and health bar for every other player on the server.
+-- PartyOn: a panel with name and health bar for every other player on the server.
 -- Built from plain UMG classes at runtime, so no cooked widget blueprint is needed.
 -- Health comes from the R5AttributeSet on each PlayerState, which every client receives.
 -- Windrose has no "in combat" flag (see docs/plan.md), so a player counts as fighting for a
 -- while after losing health or while the combat animation tag is set.
 -- Settings live in config.lua; the toggle key hides and shows the panel.
 --
--- Revive (needs the server mod partyrevive): after death the player picks respawn or waiting
+-- Revive (needs the Party On server mod): after death the player picks respawn or waiting
 -- as a ghost; a ghost can cancel; a living player near a ghost's death spot revives him. The
--- client only sends "partyhud <cmd>" through ServerExecRPC and reads ghost state from the
+-- client only sends "partyon <cmd>" through ServerExecRPC and reads ghost state from the
 -- pawn's replicated bHidden; the server decides everything else.
 
 local CFG = {
@@ -21,7 +21,7 @@ if ok_cfg and type(user_cfg) == "table" then
 end
 
 local UPDATE_MS = 250
-local WIDGET_NAME = "PartyHudWidget"
+local WIDGET_NAME = "PartyOnWidget"
 -- A hot reload (Ctrl+R) can leave the previous instance's loop running with its own widget and
 -- state. Every instance tags its widget with a generation; an older one retires when it sees a
 -- newer widget.
@@ -35,7 +35,7 @@ local COLOR = {
     ghost = { R = 0.55, G = 0.8, B = 1, A = 1 },
     bar = { R = 0.75, G = 0.12, B = 0.12, A = 1 },
 }
--- Must match partyrevive on the server.
+-- Must match server/partyon/revive.lua.
 local HOVER = 1500       -- cm a ghost hangs above its death spot
 local HELP_RADIUS = 500  -- cm, horizontal
 local HELP_RADIUS_Z = 400
@@ -106,7 +106,7 @@ local function in_combat(name, hp, asc)
     return now - f.at < CFG.combat_seconds
 end
 
--- Generations of all PartyHud widgets in the viewport. Names are unique per generation: with a
+-- Generations of all PartyOn widgets in the viewport. Names are unique per generation: with a
 -- shared name a reloaded instance got the old widget object back and both wrote into it.
 local function widget_gens()
     local out = {}
@@ -131,16 +131,16 @@ local function build()
     local gi = FindFirstOf("GameInstance")
     if not valid(gi) then return nil end
     local widget = new("/Script/UMG.UserWidget", gi, WIDGET_NAME .. "_" .. GEN .. "_" .. math.random(0, 1e6))
-    local tree = new("/Script/UMG.WidgetTree", widget, "PartyHudTree")
+    local tree = new("/Script/UMG.WidgetTree", widget, "PartyOnTree")
     widget.WidgetTree = tree
-    local canvas = new("/Script/UMG.CanvasPanel", tree, "PartyHudCanvas")
+    local canvas = new("/Script/UMG.CanvasPanel", tree, "PartyOnCanvas")
     tree.RootWidget = canvas
-    local box = new("/Script/UMG.VerticalBox", tree, "PartyHudBox")
+    local box = new("/Script/UMG.VerticalBox", tree, "PartyOnBox")
     local slot = canvas:AddChildToCanvas(box)
     slot:SetPosition({ X = CFG.x, Y = CFG.y })
     slot:SetAutoSize(true)
     -- Revive prompt, centred a bit below the middle of the screen.
-    local prompt = new("/Script/UMG.TextBlock", tree, "PartyHudPrompt")
+    local prompt = new("/Script/UMG.TextBlock", tree, "PartyOnPrompt")
     pcall(function()
         local font = prompt.Font
         font.Size = math.floor(20 * CFG.scale + 0.5)
@@ -158,7 +158,7 @@ local function build()
 end
 
 local function new_row(name)
-    local id = string.format("PartyHudRow_%d", math.random(0, 1e9))
+    local id = string.format("PartyOnRow_%d", math.random(0, 1e9))
     local label = new("/Script/UMG.TextBlock", hud.tree, id .. "Label")
     pcall(function()
         local font = label.Font
@@ -229,7 +229,7 @@ end
 
 local function send(cmd)
     local pc = own_controller()
-    if pc then pcall(function() pc:ServerExecRPC("partyhud " .. cmd) end) end
+    if pc then pcall(function() pc:ServerExecRPC("partyon " .. cmd) end) end
 end
 
 -- Own revive state from own health and ghost flag; returns the prompt line for it.
@@ -254,7 +254,7 @@ local function set_prompt(text)
     if hud.prompt_text == text then return end
     hud.prompt:SetText(FText(text))
     hud.prompt_text = text
-    print(string.format("[PartyHud] %d prompt: %s\n", GEN, text))
+    print(string.format("[PartyOn] %d prompt: %s\n", GEN, text))
 end
 
 -- Red pillars over ghosts' death spots, spawned only on this client (not replicated) from the
@@ -271,7 +271,7 @@ local function load_beam_assets()
     local mesh, mat = StaticFindObject(mesh_path), StaticFindObject(mat_path)
     if not valid(mesh) then
         beam_assets = false
-        print("[PartyHud] cylinder mesh not found, no pillars\n")
+        print("[PartyOn] cylinder mesh not found, no pillars\n")
         return nil
     end
     beam_assets = { mesh = mesh, mat = valid(mat) and mat or nil }
@@ -299,7 +299,7 @@ local function spawn_beam(spot)
     pcall(function() a:SetActorEnableCollision(false) end)
     if assets.mat then
         pcall(function()
-            local mid = c:CreateDynamicMaterialInstance(0, assets.mat, FName("PartyHudBeamMat"))
+            local mid = c:CreateDynamicMaterialInstance(0, assets.mat, FName("PartyOnBeamMat"))
             mid:SetVectorParameterValue(FName("Color"), { R = 1, G = 0, B = 0, A = 1 })
         end)
     end
@@ -348,9 +348,9 @@ local function sync_beams(spots)
             local ok, a = pcall(CFG.marker == "pillar" and spawn_beam or spawn_fire, spot)
             if ok and a then
                 beams[name] = a
-                print(string.format("[PartyHud] %d beam for %s\n", GEN, name))
+                print(string.format("[PartyOn] %d beam for %s\n", GEN, name))
             elseif not ok then
-                print(string.format("[PartyHud] beam for %s failed: %s\n", name, tostring(a)))
+                print(string.format("[PartyOn] beam for %s failed: %s\n", name, tostring(a)))
             end
         end
     end
@@ -364,7 +364,7 @@ local function update()
         retired = true
         if hud and valid(hud.widget) then pcall(function() hud.widget:RemoveFromParent() end) end
         sync_beams({})
-        print(string.format("[PartyHud] %d retired, a newer instance runs\n", GEN))
+        print(string.format("[PartyOn] %d retired, a newer instance runs\n", GEN))
         return
     end
     if not hud or not valid(hud.widget) then hud = build() end
@@ -462,10 +462,10 @@ LoopAsync(UPDATE_MS, function()
     if retired then return true end
     ExecuteInGameThread(function()
         local ok, err = pcall(update)
-        if not ok then print("[PartyHud] " .. tostring(err) .. "\n") end
+        if not ok then print("[PartyOn] " .. tostring(err) .. "\n") end
     end)
     return false
 end)
 
-print(string.format("[PartyHud] %d loaded (%s), %s toggles the panel\n", GEN,
+print(string.format("[PartyOn] %d loaded (%s), %s toggles the panel\n", GEN,
     ok_cfg and "config.lua" or "defaults: " .. tostring(user_cfg), CFG.toggle_key))
