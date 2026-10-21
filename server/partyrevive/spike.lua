@@ -140,8 +140,24 @@ end
 
 -- Ghost test: the game's revive stays untouched, the new pawn is moved back to where the old
 -- one died and made hidden, frozen and immune; unghost undoes it, optionally moving it back.
-local deaths = {}   -- [player name] = death location
+local DEATHS = "Z:/home/steam/server-files/windrose_plus_data/partyrevive_deaths.txt"
+local deaths = {}   -- [player name] = death location, kept in DEATHS across restarts
 local ghosts = {}   -- [player name] = respawn location
+
+local existing = io.open(DEATHS)
+if existing then
+    existing:close()
+    for line in io.lines(DEATHS) do
+        local x, y, z, name = line:match("^(%S+) (%S+) (%S+) (.+)$")
+        if name then deaths[name] = { X = tonumber(x), Y = tonumber(y), Z = tonumber(z) } end
+    end
+end
+
+local function save_deaths()
+    local f = io.open(DEATHS, "w")
+    for name, l in pairs(deaths) do f:write(string.format("%.1f %.1f %.1f %s\n", l.X, l.Y, l.Z, name)) end
+    f:close()
+end
 
 local function player_pawn(name)
     for _, pc in ipairs(FindAllOf("PlayerController") or {}) do
@@ -198,6 +214,76 @@ function ops.unghost(a)
     return "queued unghost (runs when a player moves)"
 end
 
+-- wp.rev aggro <name> threats|perception|tag <GameplayTag>|untag <GameplayTag>|clear
+-- Ways to make mobs drop a ghost: unregister it from AI perception, give it a tag the AI treats
+-- as dead, or clear every AI controller's focus. "threats" only logs what the mobs track.
+function ops.aggro(a)
+    queue[#queue + 1] = a
+    return "queued aggro (runs when a player moves)"
+end
+
+local function threats_log()
+    local n = 0
+    for _, t in ipairs(FindAllOf("R5ThreatComponent") or {}) do
+        local ok, list = pcall(function() return t:GetThreats() end)
+        local names = {}
+        if ok and list then
+            pcall(function()
+                list:ForEach(function(_, e)
+                    local v = e:get()
+                    local ok2, s = pcall(function() return v:GetFullName() end)
+                    names[#names + 1] = ok2 and s or tostring(v)
+                end)
+            end)
+        end
+        if #names > 0 then
+            log("threats of %s: %s", t:GetOwner():GetFullName(), table.concat(names, " | "))
+            n = n + 1
+        end
+    end
+    return n .. " mob(s) with threats"
+end
+
+local function tag_container(tag)
+    return { GameplayTags = { { TagName = FName(tag) } }, ParentTags = {} }
+end
+
+function game.aggro(a)
+    local name, mode = first_player(), a[2]
+    local pawn = player_pawn(name or "")
+    if mode == "threats" then return threats_log() end
+    if not pawn then return "no pawn" end
+    local lib = StaticFindObject("/Script/GameplayAbilities.Default__AbilitySystemBlueprintLibrary")
+    if mode == "perception" then
+        local out = {}
+        for _, c in ipairs(FindAllOf("AIPerceptionStimuliSourceComponent") or {}) do
+            if c:GetOwner():GetFullName() == pawn:GetFullName() then
+                local ok, err = pcall(function() c:UnregisterFromPerceptionSystem() end)
+                out[#out + 1] = tostring(ok) .. " " .. tostring(err or "")
+            end
+        end
+        return "unregistered " .. #out .. " source(s): " .. table.concat(out, ", ")
+    elseif mode == "tag" or mode == "untag" then
+        local fn = mode == "tag" and "AddLooseGameplayTags" or "RemoveLooseGameplayTags"
+        local ok, res = pcall(function() return lib[fn](lib, pawn, tag_container(a[3]), true) end)
+        return fn .. " " .. tostring(a[3]) .. " -> " .. tostring(ok) .. " " .. tostring(res)
+    elseif mode == "clear" then
+        local n = 0
+        for _, c in ipairs(FindAllOf("AIController") or {}) do
+            pcall(function()
+                local f = c:GetFocusActor()
+                if f and f:IsValid() and f:GetFullName() == pawn:GetFullName() then
+                    c:K2_ClearFocus()
+                    c:StopMovement()
+                    n = n + 1
+                end
+            end)
+        end
+        return "cleared focus on " .. n .. " controller(s)"
+    end
+    return "usage: aggro threats|perception|tag <tag>|untag <tag>|clear"
+end
+
 function game.ghost(a)
     local name = a[2] or first_player()
     local pawn = player_pawn(name or "")
@@ -231,6 +317,7 @@ RegisterHook("/Script/R5.R5ReviveComponent:OnPawnDead", function(self, actor)
         local name = self:get():GetOwner().PlayerNamePrivate:ToString()
         local l = a:K2_GetActorLocation()
         deaths[name] = { X = l.X, Y = l.Y, Z = l.Z }
+        save_deaths()
         log("death %s at %.0f %.0f %.0f", name, l.X, l.Y, l.Z)
     end)
 end)
@@ -264,7 +351,7 @@ end)
 
 API.registerCommand("wp.rev", function(args)
     local op = ops[args[1] or ""]
-    if not op then return "usage: wp.rev classes|info|set <prop> <number>|ghost [name]|unghost [name] [back]" end
+    if not op then return "usage: wp.rev classes|info|set <prop> <number>|ghost [name]|unghost [name] [back]|aggro <mode>" end
     local ok, res = pcall(op, args)
     return ok and tostring(res) or ("failed: " .. tostring(res))
 end, "Revive spike", "wp.rev classes|info|set")
