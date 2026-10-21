@@ -35,17 +35,34 @@ local function asc_of(ps)
     return nil, "none"
 end
 
-local function owned_tags(asc)
-    for _, fn in ipairs({ "K2_GetOwnedGameplayTags", "GetOwnedGameplayTags" }) do
-        local tags = {}
-        local ok = pcall(function()
-            asc[fn](asc).GameplayTags:ForEach(function(_, tag)
-                tags[#tags + 1] = tag:get().TagName:ToString()
+-- Combat tag candidates from the client binary strings.
+local COMBAT_TAGS = { "GAS.CharacterFsm.State.Combat", "GAS.Animation.State.Combat", "GAS.Character.Movement.Combat" }
+
+local function owned_tags(asc, pawn)
+    local errs = {}
+    for _, target in ipairs({ asc, pawn }) do
+        for _, fn in ipairs({ "BP_GetOwnedGameplayTags", "K2_GetOwnedGameplayTags", "GetOwnedGameplayTags" }) do
+            local tags = {}
+            local ok, err = pcall(function()
+                target[fn](target).GameplayTags:ForEach(function(_, tag)
+                    tags[#tags + 1] = tag:get().TagName:ToString()
+                end)
             end)
-        end)
-        if ok then return table.concat(tags, ","), fn end
+            if ok then return table.concat(tags, ","), target:GetClass():GetFName():ToString() .. ":" .. fn end
+            errs[#errs + 1] = fn .. ": " .. tostring(err):sub(1, 80)
+        end
     end
-    return "n/a", "-"
+    return "n/a", table.concat(errs, " / ")
+end
+
+-- Counts per combat tag candidate through ASC:GetGameplayTagCount, works without tag listing.
+local function combat_counts(asc)
+    local out = {}
+    for _, t in ipairs(COMBAT_TAGS) do
+        local ok, n = pcall(function() return asc:GetGameplayTagCount({ TagName = FName(t) }) end)
+        out[#out + 1] = t:match("[^.]+%.[^.]+$") .. "=" .. (ok and tostring(n) or "err")
+    end
+    return table.concat(out, " ")
 end
 
 local function probe()
@@ -67,11 +84,14 @@ local function probe()
             dist = string.format("%.0fm", math.sqrt(dx * dx + dy * dy + dz * dz) / 100)
         end
         local asc, found = asc_of(ps)
-        local tags, via = "n/a", "-"
-        if asc then tags, via = owned_tags(asc) end
-        lines[#lines + 1] = string.format("%s hp=%s/%s dist=%s asc=%s(%s) tags[%s]=%s",
+        local tags, via, counts = "n/a", "-", "-"
+        if asc then
+            tags, via = owned_tags(asc, pawn)
+            counts = combat_counts(asc)
+        end
+        lines[#lines + 1] = string.format("%s hp=%s/%s dist=%s asc=%s(%s) combat[%s] tags[%s]=%s",
             fstr(ps.PlayerNamePrivate), tostring(hp), tostring(max), dist,
-            asc and asc:GetClass():GetFName():ToString() or "-", found, via, tags)
+            asc and asc:GetClass():GetFName():ToString() or "-", found, counts, via, tags)
     end)
     print("[PartyHudProbe]\n" .. table.concat(lines, "\n") .. "\n")
 end
