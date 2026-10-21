@@ -1,1 +1,1 @@
-{"name":"partyrevive","version":"0.0.1","author":"Tibor","description":"Revive spike for windrose-partyhud","main":"init.lua"}
+{"name":"partyrevive","version":"0.1.0","author":"Tibor","description":"Wait as a ghost for a teammate to revive you (server side of windrose-partyhud)","main":"init.lua"}
