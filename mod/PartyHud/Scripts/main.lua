@@ -39,6 +39,8 @@ local HOVER = 1500       -- cm a ghost hangs above its death spot
 local HELP_RADIUS = 500  -- cm, horizontal
 local HELP_RADIUS_Z = 400
 local DECIDE_SECONDS = 18  -- server accepts "wait" up to 20 s after death
+local BEAM_HEIGHT = 20000  -- cm, red pillar from a ghost's death spot up into the sky
+local BEAM_WIDTH = 0.4     -- scale of the 1 m engine cylinder
 
 local hud = nil       -- { widget, tree, box, prompt, rows = { [name] = row }, order = "a\nb" }
 local lookup = {}     -- [name] = { ps, set, asc } cached per PlayerState
@@ -46,6 +48,7 @@ local fight = {}      -- [name] = { hp = last seen health, at = os.time() of las
 local visible = true
 local me = {}         -- own revive state: died_at, choice ("wait"|"respawn"), was_ghost
 local help_target = nil
+local beams = {}      -- [name] = local StaticMeshActor marking a ghost's death spot
 
 local function valid(o)
     return o ~= nil and o:IsValid()
@@ -253,6 +256,75 @@ local function set_prompt(text)
     print(string.format("[PartyHud] %d prompt: %s\n", GEN, text))
 end
 
+-- Red pillars over ghosts' death spots, spawned only on this client (not replicated) from the
+-- engine's basic cylinder and material, which the game ships.
+local beam_assets = nil
+
+local function load_beam_assets()
+    if beam_assets ~= nil then return beam_assets or nil end
+    local mesh_path = "/Engine/BasicShapes/Cylinder.Cylinder"
+    local mat_path = "/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"
+    pcall(function() LoadAsset("/Engine/BasicShapes/Cylinder") end)
+    pcall(function() LoadAsset("/Engine/BasicShapes/BasicShapeMaterial") end)
+    local mesh, mat = StaticFindObject(mesh_path), StaticFindObject(mat_path)
+    if not valid(mesh) then
+        beam_assets = false
+        print("[PartyHud] cylinder mesh not found, no pillars\n")
+        return nil
+    end
+    beam_assets = { mesh = mesh, mat = valid(mat) and mat or nil }
+    return beam_assets
+end
+
+local function spawn_beam(spot)
+    local assets = load_beam_assets()
+    local pc = own_controller()
+    if not assets or not pc then return nil end
+    local statics = StaticFindObject("/Script/Engine.Default__GameplayStatics")
+    local t = {
+        Rotation = { X = 0, Y = 0, Z = 0, W = 1 },
+        Translation = { X = spot.X, Y = spot.Y, Z = spot.Z + BEAM_HEIGHT / 2 },
+        Scale3D = { X = BEAM_WIDTH, Y = BEAM_WIDTH, Z = BEAM_HEIGHT / 100 },
+    }
+    local a = statics:BeginDeferredActorSpawnFromClass(pc, StaticFindObject("/Script/Engine.StaticMeshActor"), t, 1, nil, 0)
+    if not valid(a) then return nil end
+    statics:FinishSpawningActor(a, t, 0)
+    local c = a.StaticMeshComponent
+    pcall(function() c:SetMobility(2) end)
+    c:SetStaticMesh(assets.mesh)
+    pcall(function() c:SetCollisionEnabled(0) end)
+    pcall(function() c:SetCastShadow(false) end)
+    pcall(function() a:SetActorEnableCollision(false) end)
+    if assets.mat then
+        pcall(function()
+            local mid = c:CreateDynamicMaterialInstance(0, assets.mat, FName("PartyHudBeamMat"))
+            mid:SetVectorParameterValue(FName("Color"), { R = 1, G = 0, B = 0, A = 1 })
+        end)
+    end
+    return a
+end
+
+-- Keeps one pillar per ghost at its death spot and removes the rest.
+local function sync_beams(spots)
+    for name, a in pairs(beams) do
+        if not spots[name] then
+            pcall(function() a:K2_DestroyActor() end)
+            beams[name] = nil
+        end
+    end
+    for name, spot in pairs(spots) do
+        if not valid(beams[name]) then
+            local ok, a = pcall(spawn_beam, spot)
+            if ok and a then
+                beams[name] = a
+                print(string.format("[PartyHud] %d beam for %s\n", GEN, name))
+            elseif not ok then
+                print(string.format("[PartyHud] beam for %s failed: %s\n", name, tostring(a)))
+            end
+        end
+    end
+end
+
 local ticks = 0
 
 local function update()
@@ -260,6 +332,7 @@ local function update()
     if ticks % 8 == 0 and newer_instance_running() then
         retired = true
         if hud and valid(hud.widget) then pcall(function() hud.widget:RemoveFromParent() end) end
+        sync_beams({})
         print(string.format("[PartyHud] %d retired, a newer instance runs\n", GEN))
         return
     end
@@ -274,6 +347,7 @@ local function update()
     local my_ghost = my_pawn ~= nil and is_ghost(my_pawn)
     local best, best_d = nil, nil
     local my_hp, my_max
+    local ghost_spots = {}
     gs.PlayerArray:ForEach(function(_, ref)
         local ps = ref:get()
         local name = fstr(ps.PlayerNamePrivate)
@@ -283,6 +357,10 @@ local function update()
         if name == my_name then my_hp, my_max = hp, max; return end
         local pawn = pawn_of(ps)
         local ghost = pawn ~= nil and is_ghost(pawn)
+        if ghost then
+            local g = pawn:K2_GetActorLocation()
+            ghost_spots[name] = { X = g.X, Y = g.Y, Z = g.Z - HOVER }
+        end
         if ghost and here and not my_ghost then
             local g = pawn:K2_GetActorLocation()
             local dx, dy, dz = g.X - here.X, g.Y - here.Y, g.Z - HOVER - here.Z
@@ -301,6 +379,7 @@ local function update()
         if not present[name] then hud.rows[name], fight[name], lookup[name] = nil, nil, nil end
     end
     arrange(names)
+    sync_beams(ghost_spots)
     help_target = best
     local text = own_prompt(my_hp, my_max, my_ghost)
     if not text and best then text = string.format("[%s] Wiederbeleben: %s", CFG.key_help, best) end
