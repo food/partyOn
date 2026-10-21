@@ -13,6 +13,7 @@
 local CFG = {
     x = 40, y = 300, scale = 1.0, combat_seconds = 10, toggle_key = "F9",
     key_respawn = "F5", key_wait = "F6", key_cancel = "F5", key_help = "F7",
+    marker = "fire", fire_color = { R = 0, G = 1, B = 0, A = 1 }, fire_scale = 1.0,
 }
 local ok_cfg, user_cfg = pcall(require, "config")
 if ok_cfg and type(user_cfg) == "table" then
@@ -305,17 +306,51 @@ local function spawn_beam(spot)
     return a
 end
 
--- Keeps one pillar per ghost at its death spot and removes the rest.
+-- The game's signal fire effect, tinted through its FireTint parameter (found in the package's
+-- name map). Which name the component takes is tried at runtime, both are set.
+local FIRE_PATH = "/Game/FX/Particles/Environment/Fire/FX_SignalFire.FX_SignalFire"
+
+local function spawn_fire(spot)
+    local pc = own_controller()
+    if not pc then return nil end
+    pcall(function() LoadAsset(FIRE_PATH) end)
+    local system = StaticFindObject(FIRE_PATH)
+    if not valid(system) then return nil end
+    local lib = StaticFindObject("/Script/Niagara.Default__NiagaraFunctionLibrary")
+    local c = lib:SpawnSystemAtLocation(pc, system, spot, { Pitch = 0, Yaw = 0, Roll = 0 },
+        { X = CFG.fire_scale, Y = CFG.fire_scale, Z = CFG.fire_scale }, false, true, 0, false)
+    if not valid(c) then return nil end
+    local color = CFG.fire_color
+    for _, n in ipairs({ "FireTint", "User.FireTint" }) do
+        pcall(function() c:SetVariableLinearColor(FName(n), color) end)
+        pcall(function() c:SetColorParameter(FName(n), color) end)
+    end
+    return c
+end
+
+local function destroy_marker(m)
+    pcall(function()
+        if m:IsA("/Script/Engine.Actor") then
+            m:K2_DestroyActor()
+        else
+            pcall(function() m:DeactivateImmediate() end)
+            m:K2_DestroyComponent(m)
+        end
+    end)
+end
+
+-- Keeps one marker (signal fire or pillar, see config.lua) per ghost at its death spot and
+-- removes the rest.
 local function sync_beams(spots)
     for name, a in pairs(beams) do
         if not spots[name] then
-            pcall(function() a:K2_DestroyActor() end)
+            destroy_marker(a)
             beams[name] = nil
         end
     end
     for name, spot in pairs(spots) do
         if not valid(beams[name]) then
-            local ok, a = pcall(spawn_beam, spot)
+            local ok, a = pcall(CFG.marker == "pillar" and spawn_beam or spawn_fire, spot)
             if ok and a then
                 beams[name] = a
                 print(string.format("[PartyHud] %d beam for %s\n", GEN, name))

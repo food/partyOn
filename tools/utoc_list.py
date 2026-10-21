@@ -1,6 +1,8 @@
 # usage: utoc_list.py <file.utoc>...  -> every file path in the IoStore directory index, one per line
-# Reads the UE5 TOC header (version 8) and the unencrypted directory index; no asset contents.
-import struct, sys
+#        utoc_list.py --extract <name-part> <out-dir> <file.utoc>...  -> raw chunk of each matching
+#        file (only uncompressed containers, which Windrose ships)
+# Reads the UE5 TOC header (version 8) and the unencrypted directory index.
+import os, struct, sys
 
 
 def fstring(b, o):
@@ -49,8 +51,8 @@ def files(path):
         here = prefix + (strings[name] + "/" if name != NONE else "")
         f = first_file
         while f != NONE:
-            fname, nxt, _ = fes[f]
-            out.append(here + strings[fname])
+            fname, nxt, toc_index = fes[f]
+            out.append((here + strings[fname], toc_index))
             f = nxt
         c = child
         while c != NONE:
@@ -61,6 +63,43 @@ def files(path):
     return out
 
 
-for p in sys.argv[1:]:
-    for line in files(p):
-        print(line)
+def chunk(path, toc_index):
+    """Raw bytes of one TOC entry, read from the matching .ucas through the block table."""
+    b = open(path, "rb").read()
+    (hsize, entries, blocks, block_entry, _, _, block_size, _) = struct.unpack_from("<IIIIIIII", b, 20)
+    seeds, = struct.unpack_from("<I", b, 84)
+    without, = struct.unpack_from("<I", b, 96)
+    ol = hsize + entries * 12 + toc_index * 10
+    offset = int.from_bytes(b[ol:ol + 5], "big")
+    length = int.from_bytes(b[ol + 5:ol + 10], "big")
+    table = hsize + entries * 12 + entries * 10 + seeds * 4 + without * 4
+    data = bytearray()
+    with open(path[:-5] + ".ucas", "rb") as cas:
+        pos = offset
+        while len(data) < length:
+            e = table + (pos // block_size) * block_entry
+            file_off = int.from_bytes(b[e:e + 5], "little")
+            comp = int.from_bytes(b[e + 5:e + 8], "little")
+            raw = int.from_bytes(b[e + 8:e + 11], "little")
+            if comp != raw or b[e + 11] != 0:
+                raise SystemExit("compressed block, not supported")
+            cas.seek(file_off + pos % block_size)
+            take = min(length - len(data), raw - pos % block_size)
+            data += cas.read(take)
+            pos += take
+    return bytes(data)
+
+
+if sys.argv[1] == "--extract":
+    needle, out_dir = sys.argv[2], sys.argv[3]
+    os.makedirs(out_dir, exist_ok=True)
+    for p in sys.argv[4:]:
+        for name, idx in files(p):
+            if needle in name:
+                target = os.path.join(out_dir, os.path.basename(name))
+                open(target, "wb").write(chunk(p, idx))
+                print(target)
+else:
+    for p in sys.argv[1:]:
+        for name, _ in files(p):
+            print(name)

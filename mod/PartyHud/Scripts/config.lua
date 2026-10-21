@@ -12,4 +12,10 @@ return {
     key_wait = "F6",     -- after death: wait as a ghost for a teammate
     key_cancel = "F5",   -- as a ghost: give up and respawn at the save point
     key_help = "F7",     -- near a ghost's death spot: revive him there
+
+    -- What marks a ghost's death spot for everyone: "fire" (the game's signal fire, tinted)
+    -- or "pillar" (a red column 200 m high)
+    marker = "fire",
+    fire_color = { R = 0, G = 1, B = 0, A = 1 },
+    fire_scale = 1.0,
 }
