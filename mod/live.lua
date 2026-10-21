@@ -7,8 +7,9 @@
 -- MarkerType (the user marker's icon index), R5MarkerModelSimple replicates its Icon texture.
 -- The texture is taken from the user marker class's own icon list, Icons[type].
 --
--- Line: A|U <tab> sender <tab> markerId <tab> x <tab> y <tab> z <tab> type <tab> localized <tab> name
+-- Line: A|U <tab> sender <tab> markerId <tab> x <tab> y <tab> z <tab> type <tab> localized <tab> snap <tab> name
 --       R   <tab> sender <tab> markerId
+-- snap is bSnappingAllowed, the "far away" option that keeps the marker on the minimap edge.
 -- sender is the AccountId of the player who set the marker. For a rule sent through another
 -- player's connection (the test bot) it is the PlayerId, so every real player gets a copy.
 local API = WindrosePlus.API
@@ -46,9 +47,12 @@ local function marker_systems()
     return res
 end
 
-local function guid(hex)
+-- GUID of a live copy: the marker's id with the last part flipped. It must differ from the real
+-- marker's id. Destroying a copy runs the remove rule for its GUID on the recipient's record, and
+-- the client removes by GUID too, so a shared id deleted the real marker along with the copy.
+local function copy_guid(hex)
     local function part(i) return tonumber(hex:sub(i, i + 7), 16) end
-    return { A = part(1), B = part(9), C = part(17), D = part(25) }
+    return { A = part(1), B = part(9), C = part(17), D = part(25) ~ 0x5A5A5A5A }
 end
 
 -- Self-test (flag file markersync_selftest_live): the sender also gets a live copy 20 m east.
@@ -74,13 +78,14 @@ end
 -- marker of the recipient (a nameless ghost after relog); an owner marks it as a system marker.
 local function create_copy(comp, simple, user, ev, pos)
     local m = comp:CreateMarker(simple, pos, { ID = ev.sender })
-    pcall(function() m.MarkerGuid = guid(ev.id) end)
+    pcall(function() m.MarkerGuid = copy_guid(ev.id) end)
     -- Same visibility as a real user marker, so the copy also shows in the world view.
     local cdo = user:GetCDO()
     for _, f in ipairs({ "WorldVisibilityData", "MapVisibilityData", "MiniMapVisibilityData",
                          "TagsVisibilityData", "OptionalWorldSize" }) do
         pcall(function() m[f] = cdo[f] end)
     end
+    pcall(function() m.bSnappingAllowed = ev.snap end)
     return m
 end
 
@@ -118,8 +123,10 @@ local function apply(ev)
                 local name = ev.localized and "Neue Markierung" or ev.name
                 if valid then
                     -- Location and Icon replicate on change, ShownName only with the first replication.
+                    -- bSnappingAllowed is treated the same way until it is known to replicate on change.
                     local ok, cur = pcall(function() return m.ShownName:ToString() end)
-                    if not ok or cur ~= name then
+                    local okS, snap = pcall(function() return m.bSnappingAllowed end)
+                    if not ok or cur ~= name or (okS and type(snap) == "boolean" and snap ~= ev.snap) then
                         remove_copy(comp, m)
                         valid = false
                     end
@@ -140,9 +147,9 @@ local function parse(line)
     if #f < 3 then return nil end
     local ev = { op = f[1], sender = f[2], id = f[3] }
     if ev.op ~= "R" then
-        if #f < 9 then return nil end
+        if #f < 10 then return nil end
         ev.x, ev.y, ev.z, ev.type = tonumber(f[4]), tonumber(f[5]), tonumber(f[6]), tonumber(f[7])
-        ev.localized, ev.name = f[8] == "1", f[9]
+        ev.localized, ev.snap, ev.name = f[8] == "1", f[9] == "1", f[10]
     end
     return ev
 end

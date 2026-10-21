@@ -27,7 +27,7 @@ so this alone only shows after the next login.
 
 **Live (Lua, `mod/live.lua`):** for each marker action the DLL appends a line to
 `windrose_plus_data/markersync_events.txt` (action, sender AccountId, MarkerId,
-position, icon, name). The Lua side reads it every 300 ms. For every other
+position, icon, far-away flag, name). The Lua side reads it every 300 ms. For every other
 online player it creates, moves, renames or destroys a marker model with
 `R5MarkersSystemComponent:CreateMarker` / `DestroyMarker` on that player's
 PlayerState. These server-side models replicate to their owner only and appear

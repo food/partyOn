@@ -195,7 +195,8 @@ static const char *account_of(void *r) {
     return NULL;
 }
 
-// Payload after the three ids: X, Y, Z (double), Type (int32), [u32 len][name], [u32 len][namespace].
+// Payload after the three ids: X, Y, Z (double), Type (int32), [u32 len][name], [u32 len][namespace],
+// [u32 len][MarkerClass], [u32 len][OwnerId], bSnappingAllowed (u8, the "far away" option).
 // `sender` is 32 chars: the AccountId, or the PlayerId for a rule sent on someone's behalf.
 static void write_event(char op, const char *sender, const char *p, size_t plen) {
     const char *mid = p + 2 * (4 + ID_LEN) + 4;
@@ -209,10 +210,18 @@ static void write_event(char op, const char *sender, const char *p, size_t plen)
         memcpy(&nl, q + 28, 4);
         if (nl > 200 || 32 + (size_t)nl > rest) nl = 0;
         if (32 + (size_t)nl + 4 <= rest) memcpy(&nsl, q + 32 + nl, 4);
+        // Skip namespace, MarkerClass and OwnerId (each [u32 len][bytes]) to reach the flag.
+        size_t at = 32 + (size_t)nl;
+        for (int i = 0; i < 3 && at + 4 <= rest; i++) {
+            uint32_t l;
+            memcpy(&l, q + at, 4);
+            at = l > 512 ? rest : at + 4 + l;
+        }
+        int snap = at < rest && q[at] == 1;
         char name[256];
         memcpy(name, q + 32, nl); name[nl] = 0;
         for (char *c = name; *c; c++) if (*c == '\t' || *c == '\n' || *c == '\r') *c = ' ';
-        fprintf(evf, "%c\t%.32s\t%.32s\t%.1f\t%.1f\t%.1f\t%d\t%d\t%s\n", op, sender, mid, x, y, z, type, nsl > 0, name);
+        fprintf(evf, "%c\t%.32s\t%.32s\t%.1f\t%.1f\t%.1f\t%d\t%d\t%d\t%s\n", op, sender, mid, x, y, z, type, nsl > 0, snap, name);
     }
     fflush(evf);
 }
