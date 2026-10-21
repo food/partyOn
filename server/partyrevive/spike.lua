@@ -177,7 +177,7 @@ local function set_ghost(pawn, on)
     local steps = {
         { "hidden", function() pawn:SetActorHiddenInGame(on) end },
         { "collision", function() pawn:SetActorEnableCollision(not on) end },
-        { "damage", function() pawn:SetCanBeDamaged(not on) end },
+        { "damage", function() pawn.bCanBeDamaged = not on end },
         { "movement", function()
             if on then pawn.CharacterMovement:DisableMovement() else pawn.CharacterMovement:SetMovementMode(1, 0) end
         end },
@@ -214,7 +214,7 @@ function ops.unghost(a)
     return "queued unghost (runs when a player moves)"
 end
 
--- wp.rev aggro <name> threats|perception|tag <GameplayTag>|untag <GameplayTag>|clear
+-- wp.rev aggro threats|perception|tag <GameplayTag>|untag <GameplayTag>|hp <value>|clear
 -- Ways to make mobs drop a ghost: unregister it from AI perception, give it a tag the AI treats
 -- as dead, or clear every AI controller's focus. "threats" only logs what the mobs track.
 function ops.aggro(a)
@@ -244,10 +244,6 @@ local function threats_log()
     return n .. " mob(s) with threats"
 end
 
-local function tag_container(tag)
-    return { GameplayTags = { { TagName = FName(tag) } }, ParentTags = {} }
-end
-
 function game.aggro(a)
     local name, mode = first_player(), a[2]
     local pawn = player_pawn(name or "")
@@ -264,9 +260,25 @@ function game.aggro(a)
         end
         return "unregistered " .. #out .. " source(s): " .. table.concat(out, ", ")
     elseif mode == "tag" or mode == "untag" then
+        -- A Lua table for FGameplayTagContainer crashed UE4SS (21.10.2026), so the container is
+        -- built by the engine from a single tag.
+        local tags = StaticFindObject("/Script/GameplayTags.Default__BlueprintGameplayTagLibrary")
+        local container = tags:MakeGameplayTagContainerFromTag({ TagName = FName(a[3]) })
         local fn = mode == "tag" and "AddLooseGameplayTags" or "RemoveLooseGameplayTags"
-        local ok, res = pcall(function() return lib[fn](lib, pawn, tag_container(a[3]), true) end)
+        local ok, res = pcall(function() return lib[fn](lib, pawn, container, true) end)
         return fn .. " " .. tostring(a[3]) .. " -> " .. tostring(ok) .. " " .. tostring(res)
+    elseif mode == "hp" then
+        -- Write Health on the player's attribute set directly (like wp.bot hp), no effect runs.
+        local ps = pawn.PlayerState
+        local path = ps:GetFullName():match("^%S+ (.+)$")
+        for _, set in ipairs(FindAllOf("R5AttributeSet") or {}) do
+            if set:GetOuter():IsValid() and set:GetOuter():GetFullName():match("^%S+ (.+)$") == path then
+                local v = tonumber(a[3]) or 0
+                set.Health = { BaseValue = v, CurrentValue = v }
+                return string.format("health now %.1f/%.1f", set.Health.CurrentValue, set.MaxHealth.CurrentValue)
+            end
+        end
+        return "no attribute set"
     elseif mode == "clear" then
         local n = 0
         for _, c in ipairs(FindAllOf("AIController") or {}) do
