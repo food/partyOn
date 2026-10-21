@@ -1,4 +1,0 @@
-*.dll
-__pycache__/
-.env
-server-files/
