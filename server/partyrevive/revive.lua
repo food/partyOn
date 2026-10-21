@@ -46,11 +46,17 @@ local function name_of(ps)
     return ok and n or nil
 end
 
--- PlayerState by player name; covers the test bot, which has an AIController.
+-- Active PlayerState by player name, from GameState.PlayerArray (covers the test bot). Not
+-- FindAllOf: after a reconnect the old PlayerState stays around without a pawn.
 local function find_ps(name)
-    for _, ps in ipairs(FindAllOf("PlayerState") or {}) do
-        if valid(ps) and name_of(ps) == name then return ps end
-    end
+    local gs = FindFirstOf("GameStateBase")
+    if not valid(gs) then return nil end
+    local found
+    gs.PlayerArray:ForEach(function(_, ref)
+        local ps = ref:get()
+        if not found and valid(ps) and name_of(ps) == name then found = ps end
+    end)
+    return found
 end
 
 local function pawn_of(ps)
@@ -119,7 +125,7 @@ end
 local function help(helper)
     local ps = find_ps(helper)
     local pawn = ps and pawn_of(ps)
-    if not pawn or is_ghost(helper) then return end
+    if not pawn or is_ghost(helper) then return log("help from %s: no pawn or helper is a ghost", helper) end
     local h = pawn:K2_GetActorLocation()
     local best, best_d
     for name, s in pairs(players) do
