@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Countdown in the respawn/wait prompt after death.
+
 ## 0.3.0 (2026-10-22)
 
 First version as Windrose Party On.

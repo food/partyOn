@@ -11,7 +11,8 @@ Co-op add-on for Windrose dedicated servers, in two parts:
   - Party panel: one row per other player with name, health and bar, sorted by name. A row
     turns orange with "Kampf" for a few seconds after the player loses health, grey with
     "tot" at zero, light blue with "wartet auf Hilfe" for a ghost. F9 hides it.
-  - Revive prompts: after death F5 respawns as usual, F6 waits as a ghost. A ghost hangs
+  - Revive prompts: after death F5 respawns as usual, F6 waits as a ghost (a countdown shows
+    how long the choice is open). A ghost hangs
     invisible above his death spot (mobs give up there) and can cancel with F5. A teammate
     within 5 m of the spot presses F7 to revive him. A signal fire burns on every ghost's
     death spot (or a red pillar, see `config.lua`).
