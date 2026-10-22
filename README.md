@@ -19,6 +19,17 @@ Co-op add-on for Windrose dedicated servers, in two parts:
 Settings (position, scale, combat seconds, keys, marker) are in
 `client/PartyOn/Scripts/config.lua`.
 
+## Tested with
+
+| Part | Version |
+| --- | --- |
+| Windrose (client and dedicated server) | 0.10.0.9.32, Steam build 24803703 |
+| Windrose+ (server) | 1.3.24 |
+| UE4SS (client) | experimental v3.0.1-1181-g83330635 |
+
+`markersync.dll` hooks fixed addresses of this game build. After a game update it disables itself
+(`markersync DISABLED` in its log) until it is rebuilt; the Lua parts keep working.
+
 ## Install
 
 Server (Windrose+ installed):
@@ -55,8 +66,7 @@ The panel works without the server part; markers and revive need it.
   `revive_spike.lua` (server RCON probes), `dbtool`, `patch_backup.py`, `wp.sh`, `bottest.sh`
 - `testserver` docker compose for the test server
 
-Game build 0.10.0.9.32. History of the two former repos (windrose-markersync,
-windrose-partyhud) is kept in this one.
+History of the two former repos (windrose-markersync, windrose-partyhud) is kept in this one.
 
 ## License
 
