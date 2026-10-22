@@ -245,7 +245,8 @@ local function own_prompt(hp, max, ghost)
     if not me.died_at then return nil end
     if me.choice == "wait" then return "Warte auf Hilfe ..." end
     if not me.choice and now - me.died_at <= DECIDE_SECONDS then
-        return string.format("[%s] Wiederbeleben     [%s] Auf Hilfe warten", CFG.key_respawn, CFG.key_wait)
+        return string.format("[%s] Wiederbeleben     [%s] Auf Hilfe warten     (%d s)",
+            CFG.key_respawn, CFG.key_wait, DECIDE_SECONDS - (now - me.died_at))
     end
 end
 
@@ -254,7 +255,6 @@ local function set_prompt(text)
     if hud.prompt_text == text then return end
     hud.prompt:SetText(FText(text))
     hud.prompt_text = text
-    print(string.format("[PartyOn] %d prompt: %s\n", GEN, text))
 end
 
 -- Red pillars over ghosts' death spots, spawned only on this client (not replicated) from the
