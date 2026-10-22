@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Only markers whose name starts with `!` are shared; all others stay private. Renaming a
+  marker to or from `!` shares or unshares it, which also shares markers placed before the
+  mod was installed (#2, #3).
+
 ## 0.3.1 (2026-10-22)
 
 ### Added

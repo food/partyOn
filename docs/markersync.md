@@ -1,10 +1,30 @@
 # Shared map markers (markersync)
 
-Part of Windrose Party On, server side: map markers a player adds,
+Part of Windrose Party On, server side: shared map markers a player adds,
 renames or removes are applied to every player in the world.
 
-Status: markers show up live for every online player and are kept in
-every player's save, so they are still there after a relog.
+A marker is shared while its name starts with `!`; all other markers stay private.
+Shared markers show up live for every online player and are kept in every player's
+save, so they are still there after a relog.
+
+| Rule | Shared before | Name with `!` now | Other players get |
+| --- | --- | --- | --- |
+| Add | - | yes | add |
+| Update | yes | yes | update |
+| Update | no | yes | add |
+| Update | yes | no | remove |
+| Remove | yes | - | remove |
+
+All other cases stay with the owner. An add or removal that comes from an update is a
+request the DLL builds itself (same payload, other rule name, the three ids only for a
+removal). The MarkerIds of shared markers are kept in
+`windrose_plus_data/markersync_shared.txt`, so a marker shared before a server restart
+still counts as shared afterwards.
+
+Markers shared before this rule existed (every marker was shared then) are not in that
+list: copies the others already have stay in their saves, and renaming or removing the
+original no longer reaches them. One that was already named `!...` is sent to the others as
+an add again on its next update, for a MarkerId they already have.
 
 ## How it works
 
