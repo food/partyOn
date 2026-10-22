@@ -1,5 +1,5 @@
--- P0 probe: F7 logs health, distance and gameplay tags of every player in GameState.PlayerArray.
--- Output goes to UE4SS.log. The player attribute set lives on the PlayerState (first probe, 21.10.2026).
+-- Dev probe: F7 logs health, distance and gameplay tags of every player in GameState.PlayerArray.
+-- Output goes to UE4SS.log. The player attribute set lives on the PlayerState.
 
 local function fstr(v)
     local ok, s = pcall(function() return v:ToString() end)
@@ -39,7 +39,7 @@ end
 local COMBAT_TAGS = { "GAS.CharacterFsm.State.Combat", "GAS.Animation.State.Combat", "GAS.Character.Movement.Combat" }
 
 -- Counts per combat tag candidate through ASC:GetGameplayTagCount. Neither the ASC nor the pawn
--- exposes a tag listing function (BP_/K2_GetOwnedGameplayTags are nil in Lua, 21.10.2026).
+-- exposes a tag listing function (BP_/K2_GetOwnedGameplayTags are nil in Lua).
 local function combat_counts(asc)
     local out = {}
     for _, t in ipairs(COMBAT_TAGS) do
@@ -118,7 +118,7 @@ RegisterKeyBind(Key.F7, function()
     end)
 end)
 
--- P3 spike: F6 sends a test message to the server through PlayerController:ServerExecRPC.
+-- F6 sends a test message to the server through PlayerController:ServerExecRPC.
 RegisterKeyBind(Key.F6, function()
     ExecuteInGameThread(function()
         local ok, err = pcall(function()

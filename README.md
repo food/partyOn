@@ -47,8 +47,7 @@ The panel works without the server part; markers and revive need it.
   `PlayerController:ServerExecRPC("partyon ...")`)
 - `client/PartyOn` UE4SS mod, UMG widgets built at runtime, no cooked assets
 - `dll` markersync hook DLL (mingw + MinHook), build container
-- `docs/plan.md` research and phases of the panel and revive; `docs/markersync.md`;
-  `docs/visual-candidates.md` game assets that could mark a death spot
+- `docs/markersync.md` how the marker sync works and how to build the DLL
 - `probe` client dev mods: `PartyHudProbe` (F7/F8 health and tag logging),
   `PartyHudGallery` (F10-F12 asset preview); both off by default, they share keys with the HUD
 - `tools` reverse engineering and test helpers: `refl.py`, `funcs.py`, `xref.py`,

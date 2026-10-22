@@ -1,7 +1,7 @@
 -- PartyOn: a panel with name and health bar for every other player on the server.
 -- Built from plain UMG classes at runtime, so no cooked widget blueprint is needed.
 -- Health comes from the R5AttributeSet on each PlayerState, which every client receives.
--- Windrose has no "in combat" flag (see docs/plan.md), so a player counts as fighting for a
+-- Windrose has no "in combat" flag, so a player counts as fighting for a
 -- while after losing health or while the combat animation tag is set.
 -- Settings live in config.lua; the toggle key hides and shows the panel.
 --
@@ -307,7 +307,7 @@ local function spawn_beam(spot)
 end
 
 -- The game's signal fire effect. It exposes no user parameters, so its color cannot be changed
--- (FireTint is internal; checked 21.10.2026).
+-- (FireTint is internal).
 local FIRE_PATH = "/Game/FX/Particles/Environment/Fire/FX_SignalFire.FX_SignalFire"
 
 local function spawn_fire(spot)

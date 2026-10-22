@@ -146,7 +146,7 @@ local function push(job) queue[#queue + 1] = job end
 
 -- A player who chose to wait becomes a ghost as soon as he has a pawn that is not the dead one.
 -- Polled from the tick: the possession hook came too early or not at all when "wait" was picked
--- before the respawn (21.10.2026).
+-- before the respawn.
 local function ghost_pending()
     for name, s in pairs(players) do
         if s.want_ghost and not s.back then

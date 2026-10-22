@@ -1,4 +1,4 @@
--- Gallery of visual candidates for marking a ghost's death spot (see docs/visual-candidates.md).
+-- Gallery of game effects, meshes and icons that could mark a ghost's death spot.
 -- F10 shows the next page in front of the player, F11 the same page again, F12 clears.
 -- Effects and meshes are spawned locally in a row with a yellow name label; icons are shown
 -- on screen.

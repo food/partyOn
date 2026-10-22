@@ -47,7 +47,7 @@ static AddServerReactor_t orig_asr;
 static void *volatile session;
 static FILE *logf;
 static CRITICAL_SECTION lock;
-static char players[MAX_PLAYERS][ID_LEN];  // ponytail: flat list, learned from traffic; persisted to file
+static char players[MAX_PLAYERS][ID_LEN];  // flat list, learned from traffic; persisted to file
 static int nplayers;
 static int replaying;
 
@@ -160,7 +160,7 @@ static void link_reactor(void *r, const char *pid) {
         if (links[i].reactor == r || !memcmp(links[i].pid, pid, ID_LEN)) { free_slot = i; break; }
         if (!links[i].reactor && free_slot < 0) free_slot = i;
     }
-    if (free_slot < 0) free_slot = 0;  // ponytail: full table overwrites slot 0, 64 players is far beyond max
+    if (free_slot < 0) free_slot = 0;  // a full table reuses slot 0; 64 players is far beyond the server limit
     links[free_slot].reactor = r;
     memcpy(links[free_slot].pid, pid, ID_LEN);
 }
@@ -175,8 +175,8 @@ static const char *account_of(void *r) {
         if (accounts[i].reactor == r) return accounts[i].acct;
         if (!accounts[i].reactor && slot < 0) slot = i;
     }
-    if (slot < 0) slot = 0;  // ponytail: full table overwrites slot 0, it is looked up again when needed
-    // ponytail: the game allocates the id string, we never free it (once per connection)
+    if (slot < 0) slot = 0;  // a full table reuses slot 0, it is looked up again when needed
+    // the game allocates the id string; it is never freed (once per connection)
     static char out[MAX_PLAYERS][0x80] __attribute__((aligned(16)));  // object size unknown, room to spare
     memset(out[slot], 0, 0x80);
     get_account_id(r, out[slot]);

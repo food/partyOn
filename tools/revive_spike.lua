@@ -1,4 +1,4 @@
--- P3 spike: watch death and revive on the server and try the knobs a revive mod would need.
+-- Revive test mod: watch death and revive on the server and try the knobs a revive mod would need.
 --   wp.rev classes          properties and functions of the revive/death classes (to the log)
 --   wp.rev info             property values of every revive/death component and its settings object
 --   wp.rev set <prop> <v>   set a number/enum property wherever it exists on those objects
@@ -261,7 +261,7 @@ function game.aggro(a)
         end
         return "unregistered " .. #out .. " source(s): " .. table.concat(out, ", ")
     elseif mode == "tag" or mode == "untag" then
-        -- A Lua table for FGameplayTagContainer crashed UE4SS (21.10.2026), so the container is
+        -- A Lua table for FGameplayTagContainer crashes UE4SS, so the container is
         -- built by the engine from a single tag.
         local tags = StaticFindObject("/Script/GameplayTags.Default__BlueprintGameplayTagLibrary")
         local container = tags:MakeGameplayTagContainerFromTag({ TagName = FName(a[3]) })
@@ -303,8 +303,8 @@ function game.ghost(a)
     if not pawn then return "no pawn for " .. tostring(name) end
     local death = deaths[name]
     if not death then return "no death location for " .. name end
-    -- Mobs keep attacking a ghost on the ground (tags, zero health and focus do not help, see
-    -- docs/plan.md), so the ghost hangs above the death spot where they cannot reach it.
+    -- Mobs keep attacking a ghost on the ground (tags, zero health and focus do not
+    -- help), so the ghost hangs above the death spot where they cannot reach it.
     local to = { X = death.X, Y = death.Y, Z = death.Z + (tonumber(a[3]) or 1500) }
     local here = pawn:K2_GetActorLocation()
     ghosts[name] = { X = here.X, Y = here.Y, Z = here.Z }
