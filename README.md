@@ -57,3 +57,8 @@ The panel works without the server part; markers and revive need it.
 
 Game build 0.10.0.9.32. History of the two former repos (windrose-markersync,
 windrose-partyhud) is kept in this one.
+
+## License
+
+MIT, see `LICENSE`. The client package bundles UE4SS (UE4SS-RE/RE-UE4SS), which has its own MIT
+license in `ue4ss/LICENSE`.
