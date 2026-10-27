@@ -4,8 +4,9 @@ Co-op add-on for Windrose dedicated servers, in two parts:
 
 - **Server** (`server/partyon`, a Windrose+ mod)
   - Shared map markers: a marker whose name starts with `!` (e.g. `!Iron mine`) shows up for
-    everyone, live and in every player's save; all other markers stay private. Renaming a
-    marker to or from `!` shares or unshares it (`docs/markersync.md`).
+    everyone, live and in every player's save, also for players who join later; all other
+    markers stay private. Renaming a marker to or from `!` shares or unshares it
+    (`docs/markersync.md`).
   - Revive: after death a player can wait as a ghost instead of respawning, and a teammate
     brings him back where he died.
 - **Client** (`client/PartyOn`, a UE4SS Lua mod, every player installs it)
