@@ -8,6 +8,12 @@
   marker to or from `!` shares or unshares it, which also shares markers placed before the
   mod was installed (#2, #3).
 
+### Fixed
+
+- Players who never touched a marker got no shared markers. The server now learns every
+  player from the location save it runs once a minute, and a newly learned player gets all
+  shared markers in the save, visible after the next login (#1).
+
 ## 0.3.1 (2026-10-22)
 
 ### Added

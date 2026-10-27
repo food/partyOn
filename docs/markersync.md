@@ -17,9 +17,11 @@ save, so they are still there after a relog.
 
 All other cases stay with the owner. An add or removal that comes from an update is a
 request the DLL builds itself (same payload, other rule name, the three ids only for a
-removal). The MarkerIds of shared markers are kept in
-`windrose_plus_data/markersync_shared.txt`, so a marker shared before a server restart
-still counts as shared afterwards.
+removal). Shared markers are kept in `windrose_plus_data/markersync_shared.txt`
+(`MarkerId payload-hex` per line), so a marker shared before a server restart still counts
+as shared afterwards. A player the DLL learns for the first time gets every marker in that
+list as an add to the save; lists from older versions have no payload and those markers
+are not sent.
 
 Markers shared before this rule existed (every marker was shared then) are not in that
 list: copies the others already have stay in their saves, and renaming or removing the
@@ -29,7 +31,7 @@ an add again on its next update, for a MarkerId they already have.
 ## How it works
 
 `dll/markersync.c` is a native DLL (mingw + MinHook) loaded by a Windrose+ Lua
-mod via `package.loadlib`. It hooks two functions of the server binary:
+mod via `package.loadlib`. It hooks these functions of the server binary:
 
 - `R5NetBlServerReactorV2::RuleRequestServer`: every
   `R5BLPlayerInWorld_{Add,Update,Remove}UserMarkerRule` request is replayed for
@@ -37,6 +39,11 @@ mod via `package.loadlib`. It hooks two functions of the server binary:
   the same, so a removal by anyone removes the marker everywhere.
 - `R5NetBlSession::AddServerReactor`: captures the session, whose reactor list
   tells which connections are still alive.
+- `Do_Impl` of the Add and Update user marker rules: skip saving the live copies
+  made by the Lua side.
+- `Do_Impl` of `R5BLPlayerInWorld_SaveCurrentLocationRule`: runs for every online
+  player about once a minute; the DLL learns the PlayerId from it, so a player
+  need not touch a marker to get shared ones.
 
 The DLL also calls the game's own getter for a connection's AccountId
 (`reactor+0x20` gRPC metadata `account-id`).
@@ -115,3 +122,6 @@ needed to load a new DLL.
 
 `tools/guardtest.sh` builds a variant with a wrong signature and checks that the
 mod disables itself, then restores the real build.
+
+`tools/jointest.sh <PlayerId>` checks that a player unknown to the DLL is learned
+from the location save and gets a marker the bot shared before that.

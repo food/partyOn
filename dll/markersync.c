@@ -10,7 +10,11 @@
 //
 // A marker is shared while its name starts with SHARE_PREFIX; all others stay private.
 // Renaming a marker to or from the prefix turns the update into an add or a removal
-// for the other players. The ids of shared markers are kept in markersync_shared.txt.
+// for the other players. Shared markers are kept in markersync_shared.txt.
+//
+// Players are also learned from the location save the server runs for everyone online
+// once a minute, so they need not touch a marker first. A newly learned player gets
+// all shared markers added to the save.
 //
 // Request layout (protobuf, ArenaStringPtr = tagged ptr to MSVC std::string):
 //   +0x10 request id (32 hex)   +0x18 rule name   +0x20 payload
@@ -28,6 +32,7 @@
 #define RVA_GET_ACCOUNT_ID 0x4e43c70       // reactor -> "account-id" from the client's gRPC metadata
 #define RVA_ADD_MARKER_DO 0x688b790       // R5BLPlayerInWorld_AddUserMarkerRule::Do_Impl
 #define RVA_UPDATE_MARKER_DO 0x688c340    // R5BLPlayerInWorld_UpdateUserMarkerRule::Do_Impl
+#define RVA_SAVE_LOCATION_DO 0x688be80    // R5BLPlayerInWorld_SaveCurrentLocationRule::Do_Impl
 // First 32 bytes of each target in game build 0.10.0.9.32. Any game update moves
 // code, so a mismatch means: do not hook (a wrong address would crash the server).
 #define SIG_RULE_REQUEST_SERVER "\x48\x89\x5c\x24\x18\x48\x89\x74\x24\x20\x57\x41\x54\x41\x55\x41\x56\x41\x57\x48\x81\xec\x50\x0d\x00\x00\x48\x8b\x05\x4f\xa8\x93"
@@ -35,6 +40,7 @@
 #define SIG_GET_ACCOUNT_ID "\x40\x53\x48\x81\xec\x80\x00\x00\x00\x48\x8b\x05\xc0\x65\x9b\x0a\x48\x33\xc4\x48\x89\x44\x24\x70\x48\x8b\xda\x48\x89\x54\x24\x28"
 #define SIG_ADD_MARKER_DO "\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x57\x48\x81\xec\xb0\x00\x00\x00\x48\x8b\x05\x97\xea\xf6\x08\x48\x33\xc4\x48\x89\x84\x24"
 #define SIG_UPDATE_MARKER_DO "\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x57\x48\x81\xec\xb0\x00\x00\x00\x48\x8b\x05\xe7\xde\xf6\x08\x48\x33\xc4\x48\x89\x84\x24"
+#define SIG_SAVE_LOCATION_DO "\x48\x89\x5c\x24\x10\x48\x89\x74\x24\x18\x57\x48\x81\xec\xb0\x00\x00\x00\x48\x8b\x05\xa7\xe3\xf6\x08\x48\x33\xc4\x48\x89\x84\x24"
 #define DATA_DIR "Z:\\home\\steam\\server-files\\windrose_plus_data\\"
 #define ID_LEN 32
 #define MAX_PLAYERS 64
@@ -47,7 +53,7 @@ typedef void *(*GetAccountId_t)(void *reactor, void *out_string);
 static GetAccountId_t get_account_id;
 static FILE *evf;  // marker events for the Lua side (live markers), one line each
 typedef char (*RuleDo_t)(void *rule);
-static RuleDo_t orig_add_do, orig_update_do;
+static RuleDo_t orig_add_do, orig_update_do, orig_location_do;
 static __thread int in_net_rule;  // set while RuleRequestServer runs on this thread
 static RuleRequestServer_t orig_rrs;
 static AddServerReactor_t orig_asr;
@@ -107,34 +113,67 @@ static void load_players(void) {
     fclose(f);
 }
 
+static int send_shared_to(const char *pid);
+
+// A player seen for the first time also gets the markers shared so far. While there is no
+// connection to send them through, the player stays unknown and is learned on the next try.
 static void learn_player(const char *id) {
     for (int i = 0; i < nplayers; i++)
         if (!memcmp(players[i], id, ID_LEN)) return;
     if (nplayers == MAX_PLAYERS) return;
+    if (!send_shared_to(id)) {
+        fprintf(logf, "no connection to send the shared markers to %.32s, learned later\n", id);
+        return;
+    }
     memcpy(players[nplayers++], id, ID_LEN);
     fprintf(logf, "learned player %.32s (%d known)\n", id, nplayers);
     save_players();
 }
 
-// MarkerIds of the shared markers, persisted to markersync_shared.txt (one id per line).
+// Shared markers: MarkerId and the payload of the last add/update, persisted to
+// markersync_shared.txt as "<MarkerId> <payload hex>" per line. Lists written before the
+// payload was stored have the id only; those markers are not sent to new players.
 static char shared[MAX_SHARED][ID_LEN];
+static char *shared_payload[MAX_SHARED];
+static size_t shared_plen[MAX_SHARED];
 static int nshared;
 
-// Writes the whole list; it only changes when a marker is shared or unshared.
+// Writes the whole list; it changes when a shared marker is added, updated or unshared.
 static void save_shared(void) {
     FILE *f = fopen(DATA_DIR "markersync_shared.txt", "w");
     if (!f) return;
-    for (int i = 0; i < nshared; i++) fprintf(f, "%.32s\n", shared[i]);
+    for (int i = 0; i < nshared; i++) {
+        fprintf(f, "%.32s", shared[i]);
+        if (shared_plen[i]) fputc(' ', f);
+        for (size_t k = 0; k < shared_plen[i]; k++) fprintf(f, "%02x", (uint8_t)shared_payload[i][k]);
+        fputc('\n', f);
+    }
     fclose(f);
+}
+
+// Replaces the stored payload of entry `i`; on a failed allocation the entry keeps the id only.
+static void set_payload(int i, const char *p, size_t plen) {
+    free(shared_payload[i]);
+    shared_payload[i] = plen ? malloc(plen) : NULL;
+    shared_plen[i] = shared_payload[i] ? plen : 0;
+    if (shared_plen[i]) memcpy(shared_payload[i], p, plen);
 }
 
 // Reads the list back at startup, so sharing survives a server restart.
 static void load_shared(void) {
     FILE *f = fopen(DATA_DIR "markersync_shared.txt", "r");
-    char line[128];
+    static char line[ID_LEN + 2 * 4096 + 8];
+    char buf[4096];
     if (!f) return;
-    while (nshared < MAX_SHARED && fgets(line, sizeof line, f))
-        if (strlen(line) >= ID_LEN && is_id(line)) memcpy(shared[nshared++], line, ID_LEN);
+    while (nshared < MAX_SHARED && fgets(line, sizeof line, f)) {
+        if (strlen(line) < ID_LEN || !is_id(line)) continue;
+        size_t n = 0;
+        unsigned b;
+        for (char *h = line + ID_LEN + 1; line[ID_LEN] == ' ' && n < sizeof buf && sscanf(h, "%2x", &b) == 1; h += 2)
+            buf[n++] = (char)b;
+        memcpy(shared[nshared], line, ID_LEN);
+        set_payload(nshared++, buf, n);
+    }
     fclose(f);
 }
 
@@ -145,16 +184,28 @@ static int is_shared(const char *mid) {
     return 0;
 }
 
-// Adds or removes the marker; returns 0 if it cannot be added because the list is full.
-static int set_shared(const char *mid, int on) {
+// Adds, updates or removes the marker; `p` is the add/update payload. Returns 0 if it cannot
+// be added because the list is full.
+static int set_shared(const char *mid, int on, const char *p, size_t plen) {
     for (int i = 0; i < nshared; i++)
         if (!memcmp(shared[i], mid, ID_LEN)) {
-            if (!on) { memcpy(shared[i], shared[--nshared], ID_LEN); save_shared(); }
+            if (on) {
+                set_payload(i, p, plen);
+            } else {
+                free(shared_payload[i]);
+                memcpy(shared[i], shared[--nshared], ID_LEN);
+                shared_payload[i] = shared_payload[nshared];
+                shared_plen[i] = shared_plen[nshared];
+                shared_payload[nshared] = NULL;
+                shared_plen[nshared] = 0;
+            }
+            save_shared();
             return 1;
         }
     if (!on) return 1;
     if (nshared == MAX_SHARED) { fprintf(logf, "  shared list full, %.32s not shared\n", mid); return 0; }
-    memcpy(shared[nshared++], mid, ID_LEN);
+    memcpy(shared[nshared], mid, ID_LEN);
+    set_payload(nshared++, p, plen);
     save_shared();
     return 1;
 }
@@ -341,9 +392,10 @@ static void set_string(msvc_string *s, const char *data, size_t n) {
 
 // Sends rule `op` (A/U/R) for `target` built from the original payload: a shared marker that
 // was private before reaches the others as an add, one that turns private as a removal (the
-// three ids only). The request is our own; only the vtable comes from the original one.
-static void replay_as(void *reactor, void *request, void *a3, void *a4, char op, const char *reqid,
-                      const char *payload, size_t plen, const char *target) {
+// three ids only). The request is our own; RuleRequestServer reads only its three strings
+// and no arguments after the request.
+static void replay_as(void *reactor, char op, const char *reqid, const char *payload, size_t plen,
+                      const char *target) {
     char buf[4096], rid[ID_LEN];
     if (op == 'R') plen = 3 * (4 + ID_LEN);
     memcpy(buf, payload, plen);
@@ -356,11 +408,36 @@ static void replay_as(void *reactor, void *request, void *a3, void *a4, char op,
     set_string(&sname, rule, strlen(rule));
     set_string(&spay, buf, plen);
     struct { void *vtable; uintptr_t metadata; msvc_string *reqid, *name, *payload; } req =
-        { *(void **)request, 0, &sid, &sname, &spay };
+        { NULL, 0, &sid, &sname, &spay };
     replaying = 1;
-    orig_rrs(reactor, &req, a3, a4);
+    orig_rrs(reactor, &req, NULL, NULL);
     replaying = 0;
     free(sid.ptr); free(sname.ptr); free(spay.ptr);
+}
+
+// Any connection of the session, or NULL.
+static void *any_reactor(void) {
+    char **it = deref(session, 0x88), **end = deref(session, 0x90);
+    return it && end > it && readable(it, 8) ? *it : NULL;
+}
+
+// Adds every shared marker to the save of a player learned just now. Their own connection
+// is not known yet, so this goes through any connection (save only, like replays for
+// offline players); the markers show after their next login. Returns 0 without a connection.
+static int send_shared_to(const char *pid) {
+    void *r = any_reactor();
+    int sent = 0;
+    if (!r) return 0;
+    in_net_rule++;
+    for (int i = 0; i < nshared; i++) {
+        if (!shared_plen[i]) continue;
+        // a fresh request id per marker: the MarkerId with its first character changed
+        replay_as(r, 'A', shared[i], shared_payload[i], shared_plen[i], pid);
+        sent++;
+    }
+    in_net_rule--;
+    fprintf(logf, "sent %d shared markers to %.32s\n", sent, pid);
+    return 1;
 }
 
 static void *hook_rrs_inner(void *reactor, void *request, void *a3, void *a4);
@@ -421,13 +498,13 @@ static void *hook_rrs_inner(void *reactor, void *request, void *a3, void *a4) {
     char *reqid2 = pb_str(request, 0x10, &rlen2);
     if (!payload2 || plen2 != plen || memcmp(payload2, buf, plen) || !reqid2 || rlen2 != ID_LEN) {
         fprintf(logf, "  request changed by game, skip replay\n");
-    } else if (set_shared(mid, now)) {
+    } else if (set_shared(mid, now, buf, plen)) {
         if (acct && evf) write_event(out, foreign ? buf + 4 : acct, buf, plen);
         for (int i = 0; i < nplayers; i++) {
             if (!memcmp(players[i], buf + 4, ID_LEN)) continue;
             void *r = find_reactor(players[i]);
             if (out == op) replay(r ? r : reactor, request, a3, a4, reqid2, payload2, players[i]);
-            else replay_as(r ? r : reactor, request, a3, a4, out, reqid2, buf, plen, players[i]);
+            else replay_as(r ? r : reactor, out, reqid2, buf, plen, players[i]);
             fprintf(logf, "  replayed for %.32s via %s reactor %p\n", players[i], r ? "own" : "sender", r ? r : reactor);
         }
     }
@@ -477,6 +554,24 @@ static char hook_update_do(void *rule) {
     fflush(logf);
     LeaveCriticalSection(&lock);
     return 1;
+}
+
+// The location save runs for every online player about once a minute; its rule carries the
+// PlayerId like the marker rules (R5 id at +0x160: char data at +0x168, length at +0x178).
+// The id is copied before the rule runs, the markers are sent after it has finished.
+static char hook_location_do(void *rule) {
+    size_t len = 0;
+    char *pid = msvc_str((char *)rule + 0x168, &len);
+    char id[ID_LEN];
+    int ok = pid && len == ID_LEN && is_id(pid);
+    if (ok) memcpy(id, pid, ID_LEN);
+    char ret = orig_location_do(rule);
+    if (!ok) return ret;
+    EnterCriticalSection(&lock);
+    learn_player(id);
+    fflush(logf);
+    LeaveCriticalSection(&lock);
+    return ret;
 }
 
 static void *hook_asr(void *s, void *reactor_sp, void *a3, void *a4) {
@@ -549,7 +644,8 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
         memcmp(base + RVA_ADD_SERVER_REACTOR, SIG_ADD_SERVER_REACTOR, 32) ||
         memcmp(base + RVA_GET_ACCOUNT_ID, SIG_GET_ACCOUNT_ID, 32) ||
         memcmp(base + RVA_ADD_MARKER_DO, SIG_ADD_MARKER_DO, 32) ||
-        memcmp(base + RVA_UPDATE_MARKER_DO, SIG_UPDATE_MARKER_DO, 32)) {
+        memcmp(base + RVA_UPDATE_MARKER_DO, SIG_UPDATE_MARKER_DO, 32) ||
+        memcmp(base + RVA_SAVE_LOCATION_DO, SIG_SAVE_LOCATION_DO, 32)) {
         fprintf(logf, "markersync DISABLED: game build changed, hook signatures do not match\n");
         fflush(logf);
         return TRUE;
@@ -564,8 +660,10 @@ BOOL WINAPI DllMain(HINSTANCE h, DWORD reason, LPVOID r) {
     MH_STATUS s2 = MH_CreateHook(base + RVA_ADD_SERVER_REACTOR, (void *)hook_asr, (void **)&orig_asr);
     MH_STATUS s4 = MH_CreateHook(base + RVA_ADD_MARKER_DO, (void *)hook_add_do, (void **)&orig_add_do);
     MH_STATUS s5 = MH_CreateHook(base + RVA_UPDATE_MARKER_DO, (void *)hook_update_do, (void **)&orig_update_do);
+    MH_STATUS s6 = MH_CreateHook(base + RVA_SAVE_LOCATION_DO, (void *)hook_location_do, (void **)&orig_location_do);
     MH_STATUS s3 = MH_EnableHook(MH_ALL_HOOKS);
-    fprintf(logf, "markersync loaded init=%d rrs=%d asr=%d add=%d update=%d enable=%d players=%d\n", s0, s1, s2, s4, s5, s3, nplayers);
+    fprintf(logf, "markersync loaded init=%d rrs=%d asr=%d add=%d update=%d location=%d enable=%d players=%d\n",
+            s0, s1, s2, s4, s5, s6, s3, nplayers);
     fflush(logf);
     return TRUE;
 }
